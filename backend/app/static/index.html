@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sentinel: triage decision support</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="appbar">
+    <div class="brandbar" aria-hidden="true"></div>
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none" focusable="false">
+            <path d="M4 17.5h6.2l3.2-7.2 4.8 13.6 3-5.6H28" stroke="currentColor"
+                  stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
+        <div class="brand-text">
+          <h1>Sentinel</h1>
+          <p>Emergency triage decision support</p>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <span class="ai-badge" id="ai-badge" title="Language model status">AI</span>
+        <div class="switch" role="group" aria-label="Department load">
+          <button type="button" data-surge="1" class="is-active">Normal load</button>
+          <button type="button" data-surge="3">3&times; surge</button>
+        </div>
+        <button type="button" id="refresh" class="ghost">Refresh</button>
+      </div>
+    </header>
+  </div>
+
+  <div class="page">
+  <div class="principles" aria-label="How Sentinel stays safe">
+    <span>Rules set the score, never the model</span>
+    <span>Confidence on every call</span>
+    <span>Escalates when unsure</span>
+    <span>Every override audited</span>
+  </div>
+
+  <section class="kpis" id="kpis" aria-label="Department status"></section>
+
+  <main class="grid">
+    <section class="panel">
+      <div class="panel-head board-head">
+        <div>
+          <span class="eyebrow">Live triage board</span>
+          <h2>Waiting room, most urgent first</h2>
+        </div>
+        <span class="livechip"><i class="dot"></i><span id="board-note">Most urgent first.</span></span>
+      </div>
+      <div class="table-wrap">
+        <table class="board">
+          <thead>
+            <tr>
+              <th scope="col">ESI</th>
+              <th scope="col">Patient</th>
+              <th scope="col">Age</th>
+              <th scope="col">Presenting complaint</th>
+              <th scope="col">Confidence</th>
+              <th scope="col">Flags</th>
+              <th scope="col">Time-critical</th>
+            </tr>
+          </thead>
+          <tbody id="board-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="panel detail" id="detail" aria-live="polite">
+      <div class="placeholder">
+        <div class="ph-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="2" />
+            <path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+        </div>
+        <h2>Pick a patient to see the reasoning</h2>
+        <p>Every score opens into the vitals read against the patient's age band, the drivers, the time-critical clocks, and the override control.</p>
+      </div>
+    </aside>
+  </main>
+
+  <section class="panel intake">
+    <div class="panel-head intake-head">
+      <div>
+        <span class="eyebrow">Free-text intake</span>
+        <h2>Add a patient from a note <span class="ai-chip" id="intake-mode">rule-based</span></h2>
+        <p class="muted">The model reads the note into structured fields and writes the plain-language read. The engine still sets the level.</p>
+      </div>
+    </div>
+    <div class="intake-body">
+      <div class="intake-input">
+        <textarea id="intake-text" rows="3" placeholder="e.g. 78F brought in by ambulance, unwell and short of breath, sweaty. HR 104, BP 118/70, SpO2 93%, hx diabetes and CAD."></textarea>
+        <div class="intake-examples" id="intake-examples"></div>
+        <div class="intake-actions">
+          <label class="check"><input type="checkbox" id="intake-add" /> Add to the live board</label>
+          <button type="button" class="primary" id="intake-run">Parse and score</button>
+        </div>
+      </div>
+      <div class="intake-output" id="intake-output">
+        <p class="muted">The parsed fields, the resulting level, and the plain-language read will appear here.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" class="is-active" data-tab="audit" aria-selected="true">Audit trail</button>
+      <button type="button" role="tab" data-tab="sim" aria-selected="false">Watcher simulation</button>
+      <button type="button" role="tab" data-tab="telemetry" aria-selected="false">AI telemetry</button>
+    </div>
+
+    <div class="tab-body" id="tab-audit">
+      <p class="muted">Append-only. Each record keeps the engine's original score, who changed it, why, and the engine version that produced it.</p>
+      <div class="table-wrap">
+        <table class="audit">
+          <thead>
+            <tr>
+              <th scope="col">#</th>
+              <th scope="col">Time (UTC)</th>
+              <th scope="col">Patient</th>
+              <th scope="col">Action</th>
+              <th scope="col">Change</th>
+              <th scope="col">Clinician</th>
+              <th scope="col">Reason</th>
+              <th scope="col">Engine</th>
+            </tr>
+          </thead>
+          <tbody id="audit-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tab-body is-hidden" id="tab-sim">
+      <p class="muted">The Watcher re-checks waiting patients on a fixed attention budget, escalates anyone who deteriorates, and alerts on anyone past their safe wait. Run both loads to compare.</p>
+      <div class="sim-actions">
+        <button type="button" class="primary" data-sim="1">Run normal load</button>
+        <button type="button" class="ghost" data-sim="3">Run 3&times; surge</button>
+      </div>
+      <div id="sim-output"></div>
+    </div>
+
+    <div class="tab-body is-hidden" id="tab-telemetry">
+      <p class="muted">Every model call is timed and costed. In rule-based mode there are no tokens and no cost; add a key to see live latency and spend. The engine's decisions never depend on any of this.</p>
+      <div id="telemetry-output"></div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div>
+      <strong>Team Sentinel</strong> &middot; PatientTriage.ai &middot; Accenture Innovation Challenge 2026
+    </div>
+    <div class="disclaimer">
+      Simulated, de&#8209;identified data. Decision support only, never a diagnosis and never a
+      replacement for clinical judgement. Thresholds follow ESI five&#8209;level triage and
+      age&#8209;banded danger&#8209;zone vitals, and are configurable per hospital. Assumed
+      jurisdiction: HIPAA (US).
+    </div>
+  </footer>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
