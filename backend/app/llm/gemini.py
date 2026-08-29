@@ -24,6 +24,7 @@ class GeminiClient:
         self.timeout_ms = timeout_ms
         self._client = None
         self._cache: dict[tuple, LLMResult] = {}
+        self._call_history: list[float] = []
 
     def _ensure_client(self):
         if self._client is None:
@@ -45,17 +46,43 @@ class GeminiClient:
         if key in self._cache:
             return replace(self._cache[key], cached=True, latency_ms=0.0)
 
+        import time
+        now = time.time()
+        self._call_history = [t for t in self._call_history if now - t < 86400]
+        
+        if len(self._call_history) >= 500:
+            return LLMResult(
+                text="", model=self.model, provider="gemini",
+                latency_ms=0.0, ok=False,
+                error="RateLimitExceeded: Daily limit of 500 requests reached",
+            )
+            
+        recent = [t for t in self._call_history if now - t < 60]
+        if len(recent) >= 15:
+            # We reached the 15 RPM limit. Wait until the oldest of the 15 calls expires.
+            sleep_time = 60 - (now - recent[0])
+            if sleep_time > 0:
+                time.sleep(sleep_time + 0.1)
+                now = time.time()
+                
+        self._call_history.append(now)
+
         start = perf_counter()
         try:
             from google.genai import types
 
             client = self._ensure_client()
+            # We use JSON action protocol in the orchestrator, not Gemini AFC.
+            # Newer google-genai SDKs warn on generate_content unless AFC is disabled.
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 temperature=0.0,
                 max_output_tokens=max_tokens,
                 response_mime_type="application/json" if json_mode else None,
                 http_options=types.HttpOptions(timeout=self.timeout_ms),
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    disable=True
+                ),
             )
             resp = client.models.generate_content(
                 model=self.model, contents=prompt, config=config

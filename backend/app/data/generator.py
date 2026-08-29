@@ -32,7 +32,7 @@ def _named_cases() -> list[Patient]:
         # Clear ESI-1: life-threatening, must trigger immediate intervention.
         Patient(
             patient_id="P-001",
-            display_name="Unresponsive collapse",
+            display_name="James Wilson",
             age_years=54,
             sex=Sex.male,
             arrival_mode=ArrivalMode.ambulance,
@@ -49,7 +49,7 @@ def _named_cases() -> list[Patient]:
         # Geriatric silent MI: atypical, no classic chest pain. Must NOT be under-triaged.
         Patient(
             patient_id="P-002",
-            display_name="Atypical geriatric MI",
+            display_name="Martha Stewart",
             age_years=78,
             sex=Sex.female,
             arrival_mode=ArrivalMode.walk_in,
@@ -68,7 +68,7 @@ def _named_cases() -> list[Patient]:
         # Pediatric febrile toddler.
         Patient(
             patient_id="P-003",
-            display_name="Febrile toddler",
+            display_name="Liam Smith",
             age_years=3,
             sex=Sex.male,
             arrival_mode=ArrivalMode.walk_in,
@@ -85,7 +85,7 @@ def _named_cases() -> list[Patient]:
         # Zero-history walk-in with sparse data (missing several vitals).
         Patient(
             patient_id="P-004",
-            display_name="Zero-history walk-in",
+            display_name="Emma Jones",
             age_years=29,
             sex=Sex.female,
             arrival_mode=ArrivalMode.walk_in,
@@ -103,7 +103,7 @@ def _named_cases() -> list[Patient]:
         # Ambiguous geriatric: vague weakness, borderline vitals. Sepsis vs benign.
         Patient(
             patient_id="P-005",
-            display_name="Ambiguous geriatric weakness",
+            display_name="Beatrice Arthur",
             age_years=81,
             sex=Sex.female,
             arrival_mode=ArrivalMode.wheelchair,
@@ -120,7 +120,7 @@ def _named_cases() -> list[Patient]:
         # Acute stroke within thrombolysis window.
         Patient(
             patient_id="P-006",
-            display_name="Acute stroke in window",
+            display_name="Robert Clark",
             age_years=67,
             sex=Sex.male,
             arrival_mode=ArrivalMode.ambulance,
@@ -137,7 +137,7 @@ def _named_cases() -> list[Patient]:
         # Clear low acuity: prescription refill.
         Patient(
             patient_id="P-007",
-            display_name="Prescription refill",
+            display_name="David Brown",
             age_years=34,
             sex=Sex.male,
             arrival_mode=ArrivalMode.walk_in,
@@ -155,7 +155,7 @@ def _named_cases() -> list[Patient]:
         # Anaphylaxis: airway threat.
         Patient(
             patient_id="P-008",
-            display_name="Anaphylaxis",
+            display_name="Sophia Davis",
             age_years=22,
             sex=Sex.female,
             arrival_mode=ArrivalMode.ambulance,
@@ -172,7 +172,7 @@ def _named_cases() -> list[Patient]:
         # Moderate: minor laceration, one resource.
         Patient(
             patient_id="P-009",
-            display_name="Hand laceration",
+            display_name="Michael Miller",
             age_years=41,
             sex=Sex.male,
             arrival_mode=ArrivalMode.walk_in,
@@ -189,7 +189,7 @@ def _named_cases() -> list[Patient]:
         # Chest pain, cardiac features, adult.
         Patient(
             patient_id="P-010",
-            display_name="Cardiac chest pain",
+            display_name="Thomas Moore",
             age_years=59,
             sex=Sex.male,
             arrival_mode=ArrivalMode.ambulance,
@@ -209,7 +209,7 @@ def _named_cases() -> list[Patient]:
         # is the case the Watcher must catch and ratchet up on re-check.
         Patient(
             patient_id="P-011",
-            display_name="Waiting-room sepsis",
+            display_name="Susan Taylor",
             age_years=63,
             sex=Sex.female,
             arrival_mode=ArrivalMode.walk_in,
@@ -307,10 +307,13 @@ def _random_fillers(n: int, start_epoch: int, spacing: float = 3.0) -> list[Pati
         if rng.random() < 0.3:
             drop = rng.choice(["resp_rate", "spo2", "temp_c"])
             setattr(vit, drop, None)
+        first_names = ["John", "Mary", "Michael", "Sarah", "William", "Jessica", "David", "Emily", "Richard", "Ashley"]
+        last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"]
+        fake_name = f"{rng.choice(first_names)} {rng.choice(last_names)}"
         out.append(
             Patient(
                 patient_id=pid,
-                display_name=f"Walk-in {i + 1}",
+                display_name=fake_name,
                 age_years=age,
                 sex=rng.choice([Sex.male, Sex.female]),
                 arrival_mode=rng.choice([ArrivalMode.walk_in, ArrivalMode.wheelchair]),

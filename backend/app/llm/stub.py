@@ -118,11 +118,27 @@ def rule_parse(text: str) -> IntakeExtraction:
     if bp:
         sbp, dbp = float(bp.group(1)), float(bp.group(2))
 
+    complaint = t
+    # Prefer a short clinical phrase when the note is only demographics + wellness.
+    wellness = re.search(
+        r"\b(no disease|no illness|no complaint|no complaints|well check|"
+        r"checkup|check-up|healthy|asymptomatic|nothing wrong)\b",
+        t,
+        re.IGNORECASE,
+    )
+    if wellness:
+        complaint = wellness.group(1).lower()
+    else:
+        # Drop leading "21M," style prefixes so complaint is not the whole note.
+        stripped = re.sub(r"^\s*\d{1,3}\s*[MmFf]\s*[,:\-]?\s*", "", t).strip()
+        if stripped:
+            complaint = stripped
+
     return IntakeExtraction(
         age_years=age,
         sex=sex,
         arrival_mode=arrival,
-        chief_complaint=t,
+        chief_complaint=complaint,
         pain_score=int(pain) if pain is not None and 0 <= pain <= 10 else None,
         responsiveness=responsiveness,
         heart_rate=hr,

@@ -10,7 +10,7 @@ from typing import Optional
 class LLMResult:
     text: str
     model: str
-    provider: str  # gemini | rule-based
+    provider: str  # gemini | ollama | rule-based
     input_tokens: int = 0
     output_tokens: int = 0
     latency_ms: float = 0.0

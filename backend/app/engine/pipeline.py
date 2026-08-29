@@ -1,4 +1,14 @@
-"""Compose the agents into a single triage pass for one patient."""
+"""Deterministic triage pipeline: BASELINE / FALLBACK / EVALUATION only.
+
+Phase 7: Gemini agent owns the primary recommendation. Callers must not treat
+`triage()` as an automatic override of the agent. Use it for:
+
+- baseline reference (`get_baseline_engine_assessment` / evaluation storage)
+- explicit deterministic_fallback when the agent cannot complete
+- offline evaluation of agreement rates
+
+Do not wire Interpreter → Adjudicator → force agent recommendation.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +18,8 @@ from app.models import Patient, TriageResult
 
 
 def triage(patient: Patient) -> TriageResult:
+    """Run Interpreter + Adjudicator for baseline / fallback / evaluation."""
+
     interp = interpret(patient)
     adj = adjudicate(patient, interp)
     return TriageResult(patient=patient, interpreter=interp, adjudicator=adj)

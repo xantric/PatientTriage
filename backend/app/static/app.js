@@ -157,65 +157,137 @@ function renderVitals(flags) {
 }
 
 function renderOverrideForm(row) {
+  /* kept for compatibility; HITL panel is primary */
+  return "";
+}
+
+function renderHitl(agent, row) {
+  if (!agent) return "";
   const options = [1, 2, 3, 4, 5].map((l) =>
-    `<option value="${l}" ${l === row.acuity ? "selected" : ""}>ESI ${l}</option>`).join("");
+    `<option value="${l}" ${l === (agent.priority || row.acuity) ? "selected" : ""}>P${l}</option>`
+  ).join("");
+  
+  const needsReview = agent.human_review_required;
+  const acceptBtn = needsReview ? '<button type="button" class="primary" data-hitl="accept">Accept</button>' : '';
+  const escalateBtn = needsReview ? '<button type="button" class="ghost danger-btn" data-hitl="escalate">Escalate</button>' : '';
+
   return `
-    <div class="section">
-      <h3>Clinician override</h3>
-      <form class="override" id="override-form">
+    <div class="section agent-hitl">
+      <h3>Human-in-the-loop</h3>
+      <p class="muted">Clinician has final authority. Modify and override require a reason.</p>
+      <div class="hitl-actions" id="hitl-actions">
+        ${acceptBtn}
+        <button type="button" class="ghost" data-hitl="modify">Modify</button>
+        <button type="button" class="ghost" data-hitl="override">Override</button>
+        ${escalateBtn}
+      </div>
+      <div class="hitl-form" id="hitl-form">
         <div class="field-row">
           <div class="field">
-            <label for="ov-acuity">Set acuity</label>
-            <select id="ov-acuity">${options}</select>
+            <label for="hitl-priority">Priority (modify / override)</label>
+            <select id="hitl-priority">${options}</select>
           </div>
           <div class="field">
-            <label for="ov-actor">Clinician</label>
-            <input type="text" id="ov-actor" value="A. Nurse" required />
+            <label for="hitl-actor">Clinician</label>
+            <input type="text" id="hitl-actor" value="A. Nurse" />
           </div>
         </div>
         <div class="field">
-          <label for="ov-role">Role</label>
-          <input type="text" id="ov-role" value="triage nurse" required />
+          <label for="hitl-reason">Reason</label>
+          <textarea id="hitl-reason" placeholder="Required for modify and override"></textarea>
         </div>
-        <div class="field">
-          <label for="ov-reason">Reason</label>
-          <textarea id="ov-reason" placeholder="What did you see that the engine did not?" required></textarea>
+        <p class="form-msg" id="hitl-msg"></p>
+      </div>
+    </div>`;
+}
+
+function renderAgentPanel(agent, row) {
+  if (!agent) return "";
+  const evidence = (agent.key_evidence || []).length
+    ? `<ul class="gap-list">${agent.key_evidence.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`
+    : `<p class="muted">No key evidence listed yet.</p>`;
+  const gaps = (agent.information_gaps || []).length
+    ? `<ul class="gap-list">${agent.information_gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>`
+    : `<p class="muted">No material gaps flagged.</p>`;
+  const agree = agent.agreement == null
+    ? "n/a"
+    : agent.agreement ? "YES" : "NO";
+  const disagree = agent.disagreement_reason
+    ? `<p class="disagree">${esc(agent.disagreement_reason)}</p>`
+    : "";
+  const timeline = (agent.timeline || []).map((t) =>
+    `<li><span class="t">${esc(t.kind)}</span><span>${esc(t.label)}</span></li>`
+  ).join("");
+
+  return `
+    <div class="section agent-panel">
+      <h3>Agent assessment</h3>
+      <div class="agent-status">
+        <span class="status-pill">${esc(agent.status_label)}</span>
+        <span class="tag">${esc(agent.decision_source.replace(/_/g, " "))}</span>
+        ${agent.baseline_used ? '<span class="tag">baseline consulted</span>' : ""}
+      </div>
+
+      <div class="agent-grid">
+        <div>
+          <div class="label">Priority</div>
+          <div class="value">${agent.priority != null ? "P" + agent.priority : "—"}</div>
         </div>
-        <button type="submit" class="primary">Record override</button>
-        <p class="form-note">Clinician has final say, in either direction. No score changes silently: your name and reason go to the audit trail alongside the engine's original call.</p>
-        <p class="form-msg" id="ov-msg"></p>
-      </form>
+        <div>
+          <div class="label">Urgency</div>
+          <div class="value sm">${esc(agent.urgency || "—")}</div>
+        </div>
+        <div>
+          <div class="label">Confidence</div>
+          <div class="value sm">${agent.confidence != null ? agent.confidence.toFixed(2) : "—"}</div>
+        </div>
+      </div>
+      <p><strong>Care pathway:</strong> ${esc(agent.care_pathway || "—")}</p>
+      <p><strong>Monitoring plan:</strong> ${esc(agent.monitoring_plan || "—")}</p>
+      ${agent.reason_summary ? `<p class="whatif">${esc(agent.reason_summary)}</p>` : ""}
+
+      <h4>Key evidence</h4>
+      ${evidence}
+
+      <h4>Information gaps</h4>
+      ${gaps}
+
+      <h4>Baseline comparison</h4>
+      <div class="baseline-box">
+        <div>Agent recommendation: <strong>P${agent.agent_priority ?? "—"}</strong></div>
+        <div>Deterministic baseline: <strong>P${agent.baseline_priority ?? "—"}</strong></div>
+        <div>Agreement: <strong class="${agent.agreement === false ? "bad" : ""}">${agree}</strong></div>
+        ${disagree}
+      </div>
+
+      <h4>Agent timeline</h4>
+      <ul class="events timeline">${timeline || '<li class="muted">No operational events yet.</li>'}</ul>
     </div>`;
 }
 
 function renderAuditFor(records) {
   if (!records.length) return "";
-  const items = records.map((r) => `
+  const items = records.slice(-8).reverse().map((r) => `
     <li>
       <span class="t">#${r.record_id}</span>
-      <span>${esc(r.reason)}
-        <span class="pid">${esc(r.actor)}, ESI ${r.before_acuity} to ${r.after_acuity}</span>
+      <span>${esc(r.action)}
+        <span class="pid">${esc(r.actor)}${r.final_priority != null ? `, final P${r.final_priority}` : ""}</span>
       </span>
     </li>`).join("");
-  return `<div class="section"><h3>Override history</h3><ul class="events">${items}</ul></div>`;
+  return `<div class="section"><h3>Recent audit</h3><ul class="events">${items}</ul></div>`;
 }
 
 function renderDetail(detail) {
-  const { row, result, audit } = detail;
+  const { row, result, audit, agent } = detail;
   const { interpreter: interp, adjudicator: adj, patient } = result;
 
   const overrideNote = row.overridden
-    ? `<div class="engine-said">Engine scored ESI ${row.engine_acuity}. Clinician set ESI ${row.acuity} (${esc(row.override_direction)}).</div>`
+    ? `<div class="engine-said">Agent/baseline on file. Clinician set P${row.acuity} (${esc(row.override_direction || "set")}).</div>`
     : "";
 
-  const gaps = interp.data_gaps.length
-    ? `<div class="section"><h3>Not known</h3><ul class="gap-list">${
-        interp.data_gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul></div>`
-    : "";
-
-  const confNote = interp.confidence_band === "low"
-    ? "Low confidence, so this patient goes to a nurse rather than being auto-cleared."
-    : `Data completeness ${interp.completeness.toFixed(2)}.`;
+  const confNote = row.decision_source === "agent"
+    ? "Agent recommendation awaiting or completed clinician review."
+    : "Deterministic fallback recommendation (Gemini unavailable or incomplete).";
 
   $("#detail").innerHTML = `
     <div class="detail-head">
@@ -224,8 +296,8 @@ function renderDetail(detail) {
         <h2>${esc(row.display_name || "Walk-in")}</h2>
         <div class="sub">${esc(row.patient_id)} &middot; ${row.age_years}y ${esc(row.age_band)} &middot; arrived t+${row.arrival_epoch_min}m</div>
         ${overrideNote}
-        <div class="placement">${esc(adj.placement)} &middot; obs ${esc(row.monitoring_tier.replace(/_/g, " "))}</div>
-        <div class="dh-conf">${confMeter(interp.confidence, interp.confidence_band)}<span class="dh-conf-note">${esc(confNote)}</span></div>
+        <div class="placement">${esc((agent && agent.care_pathway) || adj.placement)} &middot; ${esc(row.decision_source.replace(/_/g, " "))}</div>
+        <div class="dh-conf">${confMeter(row.confidence, row.confidence_band)}<span class="dh-conf-note">${esc(confNote)}</span></div>
       </div>
     </div>
 
@@ -234,35 +306,78 @@ function renderDetail(detail) {
       <p>${esc(patient.chief_complaint)}</p>
     </div>
 
+    ${renderAgentPanel(agent, row)}
+    ${renderHitl(agent, row)}
+
     <div class="section">
       <h3>Plain-language read</h3>
       <div id="explain-slot"><p class="muted">Generating explanation...</p></div>
     </div>
 
-    <div class="section">
-      <h3>Why this score</h3>
-      <div class="chips" style="margin-bottom:10px">${
-        adj.top_drivers.map((d) => `<span class="tag">${esc(d)}</span>`).join(" ")}</div>
-      <ol class="reason-list">${adj.rationale.map((r) => `<li>${esc(r)}</li>`).join("")}</ol>
-    </div>
-
     ${renderClocks(adj.time_critical_clocks)}
     ${renderVitals(interp.vital_flags)}
-    ${gaps}
-
-    <div class="section">
-      <h3>If ignored</h3>
-      <p class="whatif">${esc(adj.what_if_ignored)}</p>
-    </div>
-
-    ${renderOverrideForm(row)}
     ${renderAuditFor(audit)}
   `;
 
-  $("#override-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    submitOverride(row.patient_id);
+  $$("#hitl-actions button").forEach((btn) => {
+    btn.addEventListener("click", () => submitHitl(row.patient_id, btn.dataset.hitl));
   });
+}
+
+async function submitHitl(pid, action) {
+  const msg = $("#hitl-msg");
+  const reason = ($("#hitl-reason") && $("#hitl-reason").value.trim()) || "";
+  const priority = $("#hitl-priority") ? Number($("#hitl-priority").value) : null;
+  const actor = ($("#hitl-actor") && $("#hitl-actor").value.trim()) || "A. Nurse";
+
+  if ((action === "modify" || action === "override") && reason.length < 3) {
+    msg.className = "form-msg err";
+    msg.textContent = "A reason is required for modify and override.";
+    return;
+  }
+  if ((action === "modify" || action === "override") && !priority) {
+    msg.className = "form-msg err";
+    msg.textContent = "Choose a priority for modify/override.";
+    return;
+  }
+  if ((action === "escalate" || action === "request_more_information") && reason.length < 3) {
+    msg.className = "form-msg err";
+    msg.textContent = "A reason is required for this action.";
+    return;
+  }
+
+  const payload = {
+    patient_id: pid,
+    action,
+    actor,
+    actor_role: "triage nurse",
+    reason: reason || (action === "accept" ? "Accepted agent recommendation." : reason),
+    active_priority: (action === "modify" || action === "override" || action === "accept")
+      ? (action === "accept" ? null : priority)
+      : null,
+  };
+
+  try {
+    const detail = await api("/api/hitl", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await loadBoard();
+    renderDetail(detail);
+    const note = $("#hitl-msg");
+    if (note) {
+      note.className = "form-msg ok";
+      note.textContent = `Recorded ${action.replace(/_/g, " ")}.`;
+    }
+    loadAudit();
+    loadExplanation(pid);
+  } catch (err) {
+    if (msg) {
+      msg.className = "form-msg err";
+      msg.textContent = `Could not record: ${err.message}`;
+    }
+  }
 }
 
 async function selectPatient(pid) {
@@ -278,7 +393,12 @@ async function loadExplanation(pid) {
     if (state.selected !== pid) return;
     const host = $("#explain-slot");
     if (host) {
-      const src = ex.source === "gemini" ? "Gemini, level verified" : "template";
+      const src =
+        ex.source === "gemini"
+          ? "Gemini, level verified"
+          : ex.source === "ollama"
+            ? "Ollama, level verified"
+            : "template";
       host.innerHTML = `<div class="explain-box">${esc(ex.text)}<span class="src">${esc(src)}</span></div>`;
     }
     loadTelemetry();
@@ -347,37 +467,21 @@ async function loadAudit() {
 
 /* ---------- free-text intake ---------- */
 
-function renderIntake(body) {
-  const { parsed, result, explanation, added_patient_id } = body;
-  const adj = result.adjudicator;
-  const fields = parsed.fields_found.length
-    ? parsed.fields_found.map((f) => `<span class="tag">${esc(f.replace(/_/g, " "))}</span>`).join(" ")
-    : '<span class="muted">nothing structured could be extracted</span>';
-  const srcLabel = explanation.source === "gemini" ? "Gemini, level verified" : "template";
-  const added = added_patient_id
-    ? `<span class="tag override">added as ${esc(added_patient_id)}</span>`
-    : "";
-  const note = parsed.note ? `<p class="io-note">${esc(parsed.note)}</p>` : "";
-
-  $("#intake-output").innerHTML = `
-    <div class="io-head">
-      ${esiChip(adj.acuity, true)}
-      <div class="io-meta">
-        <h3>ESI ${adj.acuity} &middot; ${esc(adj.placement)}</h3>
-        <div class="sub">parsed by ${esc(parsed.source)} ${added}</div>
-      </div>
-    </div>
-    <div class="io-explain">${esc(explanation.text)}<span class="src">${esc(srcLabel)}</span></div>
-    <div class="io-fields">${fields}</div>
-    ${note}
-    <p class="io-drivers"><strong>Drivers:</strong> ${adj.top_drivers.map(esc).join("; ")}</p>`;
-}
-
 async function runIntake() {
-  const text = $("#intake-text").value.trim();
+  const name = ($("#intake-name").value || "").trim();
+  const vitals = ($("#intake-vitals").value || "").trim();
+  const note = ($("#intake-text").value || "").trim();
+  
+  const parts = [];
+  if (name) parts.push(`Patient Name: ${name}`);
+  if (vitals) parts.push(`Vitals: ${vitals}`);
+  if (note) parts.push(`Note: ${note}`);
+  const text = parts.join(", ");
+  
   const btn = $("#intake-run");
   if (text.length < 2) {
-    $("#intake-output").innerHTML = '<p class="form-msg err">Type a note first.</p>';
+    btn.textContent = 'Type a note first.';
+    setTimeout(() => btn.textContent = "Parse, Score & Add to Board", 2000);
     return;
   }
   btn.disabled = true;
@@ -386,20 +490,27 @@ async function runIntake() {
     const body = await api("/api/intake", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, add_to_board: $("#intake-add").checked }),
+      body: JSON.stringify({ text, add_to_board: true }),
     });
-    renderIntake(body);
+    
     if (body.added_patient_id) {
+      $("#intake-name").value = "";
+      $("#intake-vitals").value = "";
+      $("#intake-text").value = "";
       await loadBoard();
       selectPatient(body.added_patient_id);
     }
     loadTelemetry();
   } catch (err) {
-    $("#intake-output").innerHTML = `<p class="form-msg err">Intake failed: ${esc(err.message)}</p>`;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Parse and score";
+    btn.textContent = `Failed: ${esc(err.message)}`;
+    setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = "Parse, Score & Add to Board";
+    }, 3000);
+    return;
   }
+  btn.disabled = false;
+  btn.textContent = "Parse, Score & Add to Board";
 }
 
 /* ---------- llm status + telemetry ---------- */

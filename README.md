@@ -2,7 +2,15 @@
 
 Accenture Innovation Challenge 2026, Round 2 prototype.
 
-Sentinel is a decision-support triage assistant built around three agents:
+**Sentinel is an agent-first, human-in-the-loop emergency triage decision-support system.** It is not autonomous medical decision-making.
+
+Primary flow: patient → agent state → Gemini agent → tools → recommendation → clinician HITL.
+
+The older Interpreter / Adjudicator pipeline remains as **baseline, fallback, and evaluation** only. The Watcher observes the waiting room, emits events, and never owns the final recommendation.
+
+Full architecture write-up: [`docs/final-architecture.md`](docs/final-architecture.md).
+
+Legacy deterministic stages (still present for baseline / fallback / evaluation):
 
 1. **Interpreter**: structures sparse intake, computes indices (shock index,
    time since onset), flags vitals against **age-banded** danger zones, and
@@ -11,12 +19,12 @@ Sentinel is a decision-support triage assistant built around three agents:
    clocks (stroke, STEMI, sepsis), sets a monitoring tier, and explains itself.
 3. **Watcher**: monitors the waiting queue, spends a fixed attention budget on
    the sickest and most overdue patients, re-records their vitals, and only ever
-   escalates ("priority ratchet"). A timer backstop alerts on any patient who
+   escalates monitoring ("priority ratchet"). A timer backstop alerts on any patient who
    passes their safe wait, so a saturated queue can never hide a patient.
 
 Design rule that runs through everything: **under-triage is worse than
 over-triage**, so danger-zone vitals only push acuity up, and genuine
-uncertainty escalates and routes to a nurse rather than settling on a
+uncertainty escalates and routes to a clinician rather than settling on a
 comfortable middle score.
 
 ![Sentinel triage board](docs/screenshot.png)

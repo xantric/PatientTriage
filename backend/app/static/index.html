@@ -36,10 +36,10 @@
 
   <div class="page">
   <div class="principles" aria-label="How Sentinel stays safe">
-    <span>Rules set the score, never the model</span>
-    <span>Confidence on every call</span>
+    <span>Agent recommends, clinician decides</span>
+    <span>Deterministic engine is baseline only</span>
     <span>Escalates when unsure</span>
-    <span>Every override audited</span>
+    <span>Every decision audited</span>
   </div>
 
   <section class="kpis" id="kpis" aria-label="Department status"></section>
@@ -90,20 +90,20 @@
       <div>
         <span class="eyebrow">Free-text intake</span>
         <h2>Add a patient from a note <span class="ai-chip" id="intake-mode">rule-based</span></h2>
-        <p class="muted">The model reads the note into structured fields and writes the plain-language read. The engine still sets the level.</p>
+        <p class="muted">The model reads the note into structured fields. The triage agent recommends a priority; the clinician keeps final say.</p>
       </div>
     </div>
     <div class="intake-body">
-      <div class="intake-input">
-        <textarea id="intake-text" rows="3" placeholder="e.g. 78F brought in by ambulance, unwell and short of breath, sweaty. HR 104, BP 118/70, SpO2 93%, hx diabetes and CAD."></textarea>
+      <div class="intake-input" style="width: 100%;">
+        <div style="display: flex; gap: 1rem; margin-bottom: 0.5rem;">
+          <input type="text" id="intake-name" placeholder="Patient Name" style="flex: 1; padding: 0.5rem;" />
+          <input type="text" id="intake-vitals" placeholder="Vitals (e.g. HR 90, BP 120/80)" style="flex: 2; padding: 0.5rem;" />
+        </div>
+        <textarea id="intake-text" rows="3" placeholder="Chief complaint / Text note"></textarea>
         <div class="intake-examples" id="intake-examples"></div>
         <div class="intake-actions">
-          <label class="check"><input type="checkbox" id="intake-add" /> Add to the live board</label>
-          <button type="button" class="primary" id="intake-run">Parse and score</button>
+          <button type="button" class="primary" id="intake-run">Parse, Score & Add to Board</button>
         </div>
-      </div>
-      <div class="intake-output" id="intake-output">
-        <p class="muted">The parsed fields, the resulting level, and the plain-language read will appear here.</p>
       </div>
     </div>
   </section>
@@ -116,7 +116,7 @@
     </div>
 
     <div class="tab-body" id="tab-audit">
-      <p class="muted">Append-only. Each record keeps the engine's original score, who changed it, why, and the engine version that produced it.</p>
+      <p class="muted">Append-only. Agent assessments and clinician HITL actions are logged with priorities, tools, and reasons.</p>
       <div class="table-wrap">
         <table class="audit">
           <thead>

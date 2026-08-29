@@ -203,14 +203,14 @@ class AuditRecord(BaseModel):
     """One immutable line in the audit trail.
 
     Carries everything a reviewer needs to reconstruct a decision after the
-    fact: what the engine said, what the human changed it to, who did it, why,
-    when, and which engine version produced the original score.
+    fact: what the agent/engine said, what the human changed it to, who did it,
+    why, when, and which version produced the original score.
     """
 
     record_id: int
     timestamp_utc: str
     patient_id: str
-    action: str  # override | reset
+    action: str  # override | reset | agent_assessment | hitl_*
     actor: str
     actor_role: str
     reason: str
@@ -220,6 +220,21 @@ class AuditRecord(BaseModel):
     direction: Optional[str] = None  # escalate | de-escalate | unchanged
     engine_confidence: Optional[float] = None
     engine_drivers: list[str] = Field(default_factory=list)
+    # Phase 8 agent audit fields
+    assessment_id: Optional[str] = None
+    event_id: Optional[str] = None
+    agent_model: Optional[str] = None
+    agent_version: Optional[str] = None
+    agent_action: Optional[str] = None
+    tools_used: list[str] = Field(default_factory=list)
+    iterations: Optional[int] = None
+    agent_priority: Optional[int] = None
+    agent_confidence: Optional[float] = None
+    baseline_priority: Optional[int] = None
+    agreement: Optional[bool] = None
+    clinician_action: Optional[str] = None
+    clinician_reason: Optional[str] = None
+    final_priority: Optional[int] = None
 
 
 class OverrideRequest(BaseModel):
@@ -232,6 +247,50 @@ class OverrideRequest(BaseModel):
     actor_role: str = "triage nurse"
 
 
+class HitlRequest(BaseModel):
+    """Human-in-the-loop action on an agent recommendation."""
+
+    patient_id: str
+    action: str = Field(
+        ...,
+        description="accept | modify | override | request_more_information | escalate",
+    )
+    actor: str = Field("A. Nurse", min_length=1)
+    actor_role: str = "triage nurse"
+    reason: str = ""
+    active_priority: Optional[int] = Field(None, ge=1, le=5)
+    info_provided: list[str] = Field(default_factory=list)
+
+
+class TimelineItem(BaseModel):
+    time_min: int = 0
+    kind: str
+    label: str
+
+
+class AgentPanel(BaseModel):
+    """Agent Assessment panel payload for the patient detail UI."""
+
+    status: str
+    status_label: str
+    decision_source: str
+    baseline_used: bool = False
+    priority: Optional[int] = None
+    urgency: str = ""
+    care_pathway: str = ""
+    monitoring_plan: str = ""
+    confidence: Optional[float] = None
+    reason_summary: str = ""
+    key_evidence: list[str] = Field(default_factory=list)
+    information_gaps: list[str] = Field(default_factory=list)
+    agent_priority: Optional[int] = None
+    baseline_priority: Optional[int] = None
+    agreement: Optional[bool] = None
+    disagreement_reason: Optional[str] = None
+    timeline: list[TimelineItem] = Field(default_factory=list)
+    human_review_required: bool = True
+
+
 class BoardRow(BaseModel):
     """One patient as shown on the live triage board."""
 
@@ -241,7 +300,9 @@ class BoardRow(BaseModel):
     age_band: str
     chief_complaint: str
     arrival_epoch_min: int
-    acuity: int  # effective acuity: the override if there is one, else the engine
+    # Effective priority: clinician override if present, else agent (or fallback) rec.
+    acuity: int
+    # Deterministic baseline for evaluation / display. Never an auto-override.
     engine_acuity: int
     overridden: bool = False
     override_direction: Optional[str] = None
@@ -256,6 +317,14 @@ class BoardRow(BaseModel):
     placement: str
     monitoring_tier: MonitoringTier
     expected_acuity: Optional[int] = None
+    decision_source: str = "deterministic_fallback"  # agent | deterministic_fallback
+    baseline_used: bool = False
+    agent_priority: Optional[int] = None
+    baseline_priority: Optional[int] = None
+    clinician_priority: Optional[int] = None
+    agent_baseline_agreement: Optional[bool] = None
+    agent_clinician_agreement: Optional[bool] = None
+    baseline_clinician_agreement: Optional[bool] = None
 
 
 class BoardSummary(BaseModel):
@@ -266,6 +335,10 @@ class BoardSummary(BaseModel):
     escalated_for_uncertainty: int
     active_clocks: int
     overrides: int
+    agent_decisions: int = 0
+    fallback_decisions: int = 0
+    baseline_used_count: int = 0
+    agent_baseline_disagreements: int = 0
 
 
 class BoardResponse(BaseModel):
@@ -279,8 +352,14 @@ class PatientDetail(BaseModel):
     """Everything behind one board row, for the drill-down panel."""
 
     row: BoardRow
-    result: TriageResult
+    result: TriageResult  # deterministic baseline / evaluation bundle
     audit: list[AuditRecord]
+    decision_source: str = "deterministic_fallback"
+    baseline_used: bool = False
+    evaluation: Optional[dict] = None
+    agent_reason_summary: Optional[str] = None
+    agent: Optional[AgentPanel] = None
+
 
 
 # --- LLM: free-text intake, explanations, telemetry ---
@@ -295,6 +374,7 @@ class PatientDetail(BaseModel):
 class IntakeExtraction(BaseModel):
     """Structured fields pulled out of a free-text note. All optional."""
 
+    patient_name: Optional[str] = None
     age_years: Optional[float] = None
     sex: Optional[str] = None
     arrival_mode: Optional[str] = None
@@ -318,7 +398,7 @@ class ParsedIntake(BaseModel):
 
     patient: Patient
     fields_found: list[str]
-    source: str  # gemini | rule-based
+    source: str  # gemini | ollama | rule-based
     note: Optional[str] = None
     raw_text: str
 
@@ -327,7 +407,7 @@ class Explanation(BaseModel):
     """A plain-language gloss on a decision the engine already made."""
 
     text: str
-    source: str  # gemini | template
+    source: str  # gemini | ollama | template
     verified: bool
     patient_id: Optional[str] = None
 
@@ -350,12 +430,12 @@ class LLMCall(BaseModel):
 
 
 class LLMStatus(BaseModel):
-    provider_mode: str  # gemini | rule-based
+    provider_mode: str  # gemini | ollama | rule-based
     model: str
-    configured_mode: str  # auto | gemini | stub
+    configured_mode: str  # auto | gemini | ollama | stub
     key_present: bool
     package_available: bool
-    live: bool  # actually calling Gemini
+    live: bool  # calling a live model provider
 
 
 class TelemetrySummary(BaseModel):
@@ -383,3 +463,9 @@ class IntakeResponse(BaseModel):
     explanation: Explanation
     calls: list[LLMCall]
     added_patient_id: Optional[str] = None
+    # When true, UI must not present engine ESI as a firm triage decision.
+    needs_more_information: bool = False
+    information_gaps: list[str] = Field(default_factory=list)
+    decision_source: str = "deterministic_fallback"
+    live_priority: Optional[int] = None
+    agent_status: Optional[str] = None

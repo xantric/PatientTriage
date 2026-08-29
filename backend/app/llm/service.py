@@ -12,9 +12,9 @@ import re
 from datetime import datetime, timezone
 from time import perf_counter
 
-from app.engine.pipeline import triage
 from app.llm import config
 from app.llm.gemini import GeminiClient
+from app.llm.ollama import OllamaClient
 from app.llm.stub import rule_parse, template_explanation
 from app.llm.types import LLMResult
 from app.models import (
@@ -40,7 +40,7 @@ _PARSE_SYSTEM = (
 )
 
 _PARSE_KEYS = (
-    "age_years, sex (M/F/O), arrival_mode (walk_in/ambulance/wheelchair/carried), "
+    "patient_name, age_years, sex (M/F/O), arrival_mode (walk_in/ambulance/wheelchair/carried), "
     "chief_complaint, pain_score (0-10), responsiveness (A/V/P/U), heart_rate, "
     "resp_rate, sbp, dbp, spo2, temp_c, onset_minutes, history (list), "
     "medications (list), allergies (list)"
@@ -119,7 +119,7 @@ def _extraction_to_patient(x: IntakeExtraction, patient_id: str, raw_text: str) 
 
     patient = Patient(
         patient_id=patient_id,
-        display_name="Free-text intake",
+        display_name=x.patient_name or "Free-text intake",
         age_years=float(x.age_years) if x.age_years is not None else 40.0,
         sex=_to_sex(x.sex),
         arrival_mode=_to_arrival(x.arrival_mode),
@@ -176,6 +176,17 @@ def _extraction_from_json(text: str) -> IntakeExtraction | None:
         raw = text.strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-zA-Z]*\n?|\n?```$", "", raw).strip()
+        # Local models often add prose around the object; take the outer braces.
+        if not raw.startswith("{"):
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start >= 0 and end > start:
+                raw = raw[start : end + 1]
+        # llama/qwen sometimes inject # or // comments inside "JSON".
+        raw = re.sub(r"//.*?$", "", raw, flags=re.MULTILINE)
+        raw = re.sub(r"#.*?$", "", raw, flags=re.MULTILINE)
+        raw = re.sub(r",\s*}", "}", raw)
+        raw = re.sub(r",\s*]", "]", raw)
         data = json.loads(raw)
     except Exception:
         return None
@@ -183,6 +194,7 @@ def _extraction_from_json(text: str) -> IntakeExtraction | None:
         return None
 
     return IntakeExtraction(
+        patient_name=_coerce_str(data.get("patient_name")),
         age_years=_coerce_float(data.get("age_years")),
         sex=_coerce_str(data.get("sex")),
         arrival_mode=_coerce_str(data.get("arrival_mode")),
@@ -199,6 +211,84 @@ def _extraction_from_json(text: str) -> IntakeExtraction | None:
         history=_coerce_list(data.get("history")),
         medications=_coerce_list(data.get("medications")),
         allergies=_coerce_list(data.get("allergies")),
+    )
+
+
+def _merge_rule_gaps(extraction: IntakeExtraction, text: str) -> IntakeExtraction:
+    """Prefer model values; fill nulls from the deterministic regex parse."""
+
+    rule = rule_parse(text)
+    data = extraction.model_dump()
+    for key, value in rule.model_dump().items():
+        if data.get(key) in (None, [], ""):
+            data[key] = value
+    # Compact "21M" often lands in chief_complaint; prefer a real complaint.
+    cc = (data.get("chief_complaint") or "").strip()
+    if re.fullmatch(r"\d{1,3}\s*[MmFf].*", cc) or re.search(
+        r"\bno disease\b|\bno illness\b|\bhealthy\b|\basymptomatic\b", cc, re.I
+    ):
+        if rule.chief_complaint and rule.chief_complaint != cc:
+            data["chief_complaint"] = rule.chief_complaint
+    return IntakeExtraction(**data)
+
+
+_WELLNESS_CUES = re.compile(
+    r"\b(no disease|no illness|no complaint|no complaints|well check|"
+    r"checkup|check-up|healthy|asymptomatic|nothing wrong)\b",
+    re.IGNORECASE,
+)
+
+
+def _intake_information_gaps(parsed: ParsedIntake) -> list[str]:
+    """Fields a clinician would need before trusting an ESI number."""
+
+    gaps: list[str] = []
+    p = parsed.patient
+    found = set(parsed.fields_found)
+    if "age_years" not in found:
+        gaps.append("age")
+    if not (p.chief_complaint or "").strip() or len((p.chief_complaint or "").strip()) < 4:
+        gaps.append("chief complaint")
+    elif _WELLNESS_CUES.search(p.chief_complaint or "") and not any(
+        getattr(p.vitals, k) is not None
+        for k in ("heart_rate", "sbp", "spo2", "resp_rate", "temp_c")
+    ):
+        gaps.append("reason for visit (wellness note has no vitals or acute complaint)")
+    vital_ok = any(
+        getattr(p.vitals, k) is not None
+        for k in ("heart_rate", "sbp", "spo2", "resp_rate")
+    )
+    if not vital_ok:
+        gaps.append("vitals (HR, BP, SpO2, or RR)")
+    return gaps
+
+
+def _needs_more_information(
+    parsed: ParsedIntake,
+    *,
+    recommendation_priority: int | None,
+    agent_terminal: str | None,
+) -> bool:
+    gaps = _intake_information_gaps(parsed)
+    if len(gaps) >= 2:
+        return True
+    if agent_terminal in ("REQUEST_INFORMATION", "ESCALATE", "AWAITING_HUMAN"):
+        return recommendation_priority is None
+    if recommendation_priority is None and gaps:
+        return True
+    return False
+
+
+def _insufficient_explanation(gaps: list[str], patient_id: str) -> Explanation:
+    listed = "; ".join(gaps) if gaps else "more clinical detail"
+    text = (
+        "Not enough information to assign a trusted urgency level. "
+        f"Please add: {listed}. "
+        "A provisional engine score may exist for reference only and should not "
+        "be treated as the triage decision."
+    )
+    return Explanation(
+        text=text, source="template", verified=True, patient_id=patient_id
     )
 
 
@@ -221,13 +311,23 @@ class LLMService:
         self.key_present = config.api_key() is not None
         self.package_available = config.package_available()
         self.model = config.model_name()
+        self.client = None
+        self.gemini = None  # kept for older tests / callers
 
-        want_gemini = self.configured in ("auto", "gemini")
-        self.live = want_gemini and self.key_present and self.package_available
-        self.gemini = (
-            GeminiClient(config.api_key(), self.model, config.timeout_ms())
-            if self.live else None
-        )
+        if self.configured == "ollama":
+            self.client = OllamaClient(
+                self.model, config.ollama_base_url(), config.timeout_ms()
+            )
+            self.live = True
+        elif self.configured in ("auto", "gemini"):
+            self.live = self.key_present and self.package_available
+            if self.live:
+                self.client = GeminiClient(
+                    config.api_key() or "", self.model, config.timeout_ms()
+                )
+                self.gemini = self.client
+        else:
+            self.live = False
 
     # --- telemetry ---
 
@@ -251,8 +351,14 @@ class LLMService:
         return call
 
     def status(self) -> LLMStatus:
+        if self.configured == "ollama":
+            provider_mode = "ollama"
+        elif self.live:
+            provider_mode = "gemini"
+        else:
+            provider_mode = "rule-based"
         return LLMStatus(
-            provider_mode="gemini" if self.live else "rule-based",
+            provider_mode=provider_mode,
             model=self.model if self.live else "rule-based",
             configured_mode=self.configured,
             key_present=self.key_present,
@@ -288,9 +394,9 @@ class LLMService:
         source = "rule-based"
         note = None
 
-        if self.gemini is not None:
+        if self.client is not None:
             prompt = f"Fields to extract: {_PARSE_KEYS}.\n\nNote:\n{text}"
-            res = self.gemini.generate(
+            res = self.client.generate(
                 system=_PARSE_SYSTEM, prompt=prompt, json_mode=True,
                 max_tokens=512, cache_key=f"parse::{text}",
             )
@@ -298,7 +404,9 @@ class LLMService:
             if res.ok:
                 extraction = _extraction_from_json(res.text)
                 if extraction is not None:
-                    source = "gemini"
+                    # Fill gaps the model left blank (e.g. missed "21M" age).
+                    extraction = _merge_rule_gaps(extraction, text)
+                    source = res.provider
                 else:
                     note = "model reply was not valid JSON; used rule-based parse"
             else:
@@ -307,7 +415,7 @@ class LLMService:
         if extraction is None:
             start = perf_counter()
             extraction = rule_parse(text)
-            fell_back = self.gemini is not None
+            fell_back = self.client is not None
             calls.append(self._record(
                 "parse",
                 LLMResult(text="", model="rule-based", provider="rule-based",
@@ -325,7 +433,7 @@ class LLMService:
 
     def explain(self, result: TriageResult) -> tuple[Explanation, LLMCall]:
         acuity = result.adjudicator.acuity
-        if self.gemini is not None:
+        if self.client is not None:
             facts = (
                 f"ESI level (do not change): {acuity}\n"
                 f"Placement: {result.adjudicator.placement}\n"
@@ -334,7 +442,7 @@ class LLMService:
                 f"Confidence band: {result.adjudicator.confidence_band.value}\n"
                 f"If ignored: {result.adjudicator.what_if_ignored}"
             )
-            res = self.gemini.generate(
+            res = self.client.generate(
                 system=_EXPLAIN_SYSTEM, prompt=facts, json_mode=False,
                 max_tokens=200, cache_key=f"explain::{acuity}::{facts}",
             )
@@ -342,7 +450,7 @@ class LLMService:
             verified = res.ok and 0 < len(res.text) <= 600 and not _mentions_wrong_acuity(res.text, acuity)
             if verified:
                 return (
-                    Explanation(text=res.text, source="gemini", verified=True,
+                    Explanation(text=res.text, source=res.provider, verified=True,
                                 patient_id=result.patient.patient_id),
                     call,
                 )
@@ -373,12 +481,68 @@ class LLMService:
             call,
         )
 
-    def triage_intake(self, text: str, patient_id: str) -> tuple[ParsedIntake, TriageResult, Explanation, list[LLMCall]]:
+    def triage_intake(self, text: str, patient_id: str) -> tuple[
+        ParsedIntake,
+        TriageResult,
+        Explanation,
+        list[LLMCall],
+        dict,
+    ]:
+        """Parse intake, then run agent-primary assessment (engine = baseline/fallback).
+
+        Returns an extra meta dict used by the API so thin notes never present a
+        firm ESI plus a dramatic model explanation.
+        """
+
+        from app.agent.primary import run_primary_assessment
+        from app.domain.enums import DecisionSource
+
         parsed, calls = self.parse_intake(text, patient_id)
-        result = triage(parsed.patient)
-        explanation, explain_call = self.explain(result)
-        calls.append(explain_call)
-        return parsed, result, explanation, calls
+        outcome = run_primary_assessment(parsed.patient)
+        result = outcome.baseline_result
+
+        rec = outcome.state.current_recommendation
+        live_priority = rec.priority if rec is not None else None
+        terminal = outcome.agent_run.terminal_action if outcome.agent_run else None
+        if terminal is None and outcome.decision_source == DecisionSource.deterministic_fallback:
+            terminal = "FALLBACK"
+
+        gaps = _intake_information_gaps(parsed)
+        # Also surface agent-requested gaps when present.
+        if outcome.state.information_gaps:
+            for g in outcome.state.information_gaps:
+                label = g if isinstance(g, str) else str(g)
+                if label and label not in gaps:
+                    gaps.append(label)
+
+        if (
+            rec is not None
+            and live_priority is not None
+            and live_priority != result.adjudicator.acuity
+        ):
+            explained = result.model_copy(deep=True)
+            explained.adjudicator.acuity = live_priority
+            explained.adjudicator.top_drivers = list(
+                rec.key_evidence[:5] or explained.adjudicator.top_drivers
+            )
+            explanation, explain_call = self.explain(explained)
+            calls.append(explain_call)
+        else:
+            explanation, explain_call = self.explain(result)
+            calls.append(explain_call)
+            
+        meta = {
+            "needs_more_information": False,
+            "information_gaps": gaps,
+            "decision_source": outcome.decision_source.value,
+            "live_priority": live_priority,
+            "agent_status": (
+                outcome.state.status.value
+                if hasattr(outcome.state.status, "value")
+                else str(outcome.state.status)
+            ),
+        }
+        return parsed, result, explanation, calls, meta
 
 
 LLM = LLMService()

@@ -1,19 +1,15 @@
-"""Append-only audit trail for clinician overrides.
+"""Append-only audit trail for clinician and agent decisions.
 
 Two rules make this an audit trail rather than a log file: records can only be
-appended, never edited or deleted, and an override cannot be written without a
-reason. Readers get copies, so a caller cannot reach in and rewrite history.
-
-This prototype holds records in memory. A deployment would append to
-write-once storage (an append-only table or object store with a retention
-lock) to satisfy the HIPAA-style trail we assume in the plan.
+appended, never edited or deleted, and an override/HITL write cannot omit a
+reason when the action requires one. Readers get copies.
 """
 
 from __future__ import annotations
 
 import itertools
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from app import __version__ as ENGINE_VERSION
 from app.models import AuditRecord
@@ -52,6 +48,20 @@ class AuditLog:
         after_acuity: Optional[int] = None,
         engine_confidence: Optional[float] = None,
         engine_drivers: Optional[list[str]] = None,
+        assessment_id: Optional[str] = None,
+        event_id: Optional[str] = None,
+        agent_model: Optional[str] = None,
+        agent_version: Optional[str] = None,
+        agent_action: Optional[str] = None,
+        tools_used: Optional[list[str]] = None,
+        iterations: Optional[int] = None,
+        agent_priority: Optional[int] = None,
+        agent_confidence: Optional[float] = None,
+        baseline_priority: Optional[int] = None,
+        agreement: Optional[bool] = None,
+        clinician_action: Optional[str] = None,
+        clinician_reason: Optional[str] = None,
+        final_priority: Optional[int] = None,
     ) -> AuditRecord:
         if not reason or not reason.strip():
             raise ValueError("an audit record cannot be written without a reason")
@@ -69,17 +79,33 @@ class AuditLog:
             direction=direction_for(before_acuity, after_acuity),
             engine_confidence=engine_confidence,
             engine_drivers=list(engine_drivers or []),
+            assessment_id=assessment_id,
+            event_id=event_id,
+            agent_model=agent_model,
+            agent_version=agent_version or ENGINE_VERSION,
+            agent_action=agent_action,
+            tools_used=list(tools_used or []),
+            iterations=iterations,
+            agent_priority=agent_priority,
+            agent_confidence=agent_confidence,
+            baseline_priority=baseline_priority,
+            agreement=agreement,
+            clinician_action=clinician_action,
+            clinician_reason=clinician_reason,
+            final_priority=final_priority,
         )
         self._records.append(record)
         return record
 
     def all(self) -> list[AuditRecord]:
-        """Newest last. Returns copies so callers cannot mutate the trail."""
-
         return [r.model_copy(deep=True) for r in self._records]
 
     def for_patient(self, patient_id: str) -> list[AuditRecord]:
-        return [r.model_copy(deep=True) for r in self._records if r.patient_id == patient_id]
+        return [
+            r.model_copy(deep=True)
+            for r in self._records
+            if r.patient_id == patient_id
+        ]
 
     def __len__(self) -> int:
         return len(self._records)

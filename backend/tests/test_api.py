@@ -105,7 +105,7 @@ def test_de_escalation_is_allowed_but_recorded(client):
         "actor": "S. Mehta",
         "actor_role": "attending",
     })
-    entry = client.get("/api/audit").json()[-1]
+    entry = [r for r in client.get("/api/audit").json() if r["action"] == "override"][-1]
     assert entry["direction"] == "de-escalate"
     assert entry["actor_role"] == "attending"
 

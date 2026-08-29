@@ -101,6 +101,28 @@ def test_telemetry_records_parse_and_explain():
     assert "parse" in summary.by_task and "explain" in summary.by_task
 
 
+def test_sparse_wellness_note_asks_for_more_information():
+    """Thin notes must not present a firm ESI with dramatic model prose."""
+
+    parsed, result, explanation, calls, meta = LLM.triage_intake("21M, no disease", "TEST-SPARSE")
+    assert parsed.patient.age_years == 21
+    assert meta["needs_more_information"] is True
+    assert any("vital" in g.lower() or "wellness" in g.lower() or "reason" in g.lower()
+               for g in meta["information_gaps"])
+    assert "Not enough information" in explanation.text
+    assert explanation.source == "template"
+    # Engine may still compute a reference score, but it should not escalate
+    # a wellness phrase into ESI 2 via default resource guessing.
+    assert result.adjudicator.acuity >= 4
+
+
+def test_rule_parse_reads_compact_age_and_wellness_complaint():
+    x = rule_parse("21M, no disease")
+    assert x.age_years == 21
+    assert x.sex == "M"
+    assert "no disease" in (x.chief_complaint or "").lower()
+
+
 def test_intake_endpoint_can_add_to_board(client):
     before = client.get("/api/board").json()["summary"]["total"]
     res = client.post("/api/intake", json={

@@ -20,6 +20,7 @@ from app.models import (
     AuditRecord,
     BoardResponse,
     Explanation,
+    HitlRequest,
     IntakeRequest,
     IntakeResponse,
     LLMStatus,
@@ -36,8 +37,9 @@ app = FastAPI(
     title="Sentinel triage assistant",
     version=ENGINE_VERSION,
     description=(
-        "Decision support for emergency department triage. Deterministic "
-        "scoring, confidence on every call, and a full override audit trail. "
+        "Agent-primary emergency triage decision support. Gemini forms the "
+        "recommendation with tools; the deterministic engine is baseline, "
+        "fallback, and evaluation only. Clinician HITL is final authority. "
         "Prototype only, not clinical advice."
     ),
 )
@@ -73,16 +75,23 @@ def patient_detail(patient_id: str) -> PatientDetail:
 
 @api.post("/overrides", response_model=PatientDetail)
 def create_override(req: OverrideRequest) -> PatientDetail:
-    """Record a clinician override.
-
-    The clinician has final say, so an override may raise or lower acuity. What
-    it may not do is happen silently: the reason is required by the schema and
-    every change is written to the audit trail.
-    """
+    """Record a clinician override (legacy board control). Prefer /hitl."""
 
     if req.patient_id not in DEPARTMENT.patients:
         raise HTTPException(status_code=404, detail=f"unknown patient {req.patient_id}")
     return DEPARTMENT.apply_override(req)
+
+
+@api.post("/hitl", response_model=PatientDetail)
+def clinician_hitl(req: HitlRequest) -> PatientDetail:
+    """Human-in-the-loop: accept, modify, override, request info, or escalate."""
+
+    if req.patient_id not in DEPARTMENT.patients:
+        raise HTTPException(status_code=404, detail=f"unknown patient {req.patient_id}")
+    try:
+        return DEPARTMENT.apply_hitl(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @api.get("/audit", response_model=list[AuditRecord])
@@ -112,14 +121,14 @@ def llm_status() -> LLMStatus:
 
 @api.post("/intake", response_model=IntakeResponse)
 def intake(req: IntakeRequest) -> IntakeResponse:
-    """Read a free-text note into a patient, score it, and explain the result.
+    """Read a free-text note into a patient and run primary agent assessment.
 
-    The model only fills intake fields and writes the prose. The acuity comes
-    from the same deterministic engine every other patient runs through.
+    Intake parsing may use Gemini. The triage recommendation is agent-primary
+    with deterministic baseline/fallback/evaluation only.
     """
 
     preview_id = "INTAKE-PREVIEW"
-    parsed, result, explanation, calls = LLM.triage_intake(req.text, preview_id)
+    parsed, result, explanation, calls, meta = LLM.triage_intake(req.text, preview_id)
 
     added_id = None
     if req.add_to_board:
@@ -134,6 +143,11 @@ def intake(req: IntakeRequest) -> IntakeResponse:
         explanation=explanation,
         calls=calls,
         added_patient_id=added_id,
+        needs_more_information=meta["needs_more_information"],
+        information_gaps=meta["information_gaps"],
+        decision_source=meta["decision_source"],
+        live_priority=meta["live_priority"],
+        agent_status=meta["agent_status"],
     )
 
 

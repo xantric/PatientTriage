@@ -44,8 +44,12 @@ _HIGH_RISK_CUES = ["difficulty breathing", "shortness of breath", "short of brea
                    "confused", "confusion", "not herself", "unwell and"]
 
 # Complaints that typically need zero or one ED resource.
-_NO_RESOURCE = ["refill", "prescription", "dressing change", "tetanus", "note",
-                "suture removal", "rash", "sore throat"]
+_NO_RESOURCE = [
+    "refill", "prescription", "dressing change", "tetanus", "note",
+    "suture removal", "rash", "sore throat",
+    "no disease", "no illness", "no complaint", "no complaints",
+    "well check", "checkup", "check-up", "healthy", "asymptomatic",
+]
 _ONE_RESOURCE = ["laceration", "cut", "sprain", "minor", "x-ray", "splinter"]
 
 _TIME_WINDOWS = {"stroke": 270, "stemi": 90, "sepsis": 60}  # minutes
