@@ -6,9 +6,7 @@ Sentinel is an agent-first, human-in-the-loop triage helper for the emergency de
 
 ## Live demo
 
-Website: [https://sentinel-5roi.onrender.com/](https://sentinel-5roi.onrender.com/)
-
-Either open that link, or follow the steps below to run it on your own machine. Free Render may take 30 to 90 seconds on the first open after idle. The live path uses Gemini when configured; otherwise the deterministic engine is the fallback.
+Follow the steps below to run it on your own machine. Free Render may take 30 to 90 seconds on the first open after idle. The live path uses Gemini when configured; otherwise the deterministic engine is the fallback.
 
 <!-- ## Demo video -->
 
@@ -89,7 +87,7 @@ Required:
 - Packages in [backend/requirements.txt](backend/requirements.txt): FastAPI, Uvicorn, Pydantic, httpx, python-dateutil, pytest
 - Optional LLM packages in the same file: `google-genai`, `python-dotenv`
 
-Optional:
+Optional(Highly Recommended):
 
 - Gemini API key from [Google AI Studio](https://aistudio.google.com)
 
