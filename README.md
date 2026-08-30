@@ -143,7 +143,6 @@ Quick walkthrough:
 
 | Item | Location |
 | --- | --- |
-| Live website | [https://sentinel-5roi.onrender.com/](https://sentinel-5roi.onrender.com/) |
 | Working prototype | `backend/` |
 | This README | `README.md` |
 | Business proposal | [docs/business-proposal.md](docs/business-proposal.md) |
