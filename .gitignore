@@ -19,3 +19,10 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local build / rehearsal notes (not for judges)
+docs/pitch.md
+docs/round2-plan.md
+docs/preview/
+backend/_dbg_intake.py
+tools/_render_preview.py

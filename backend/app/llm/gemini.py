@@ -14,6 +14,11 @@ from time import perf_counter
 
 from app.llm.types import LLMResult
 
+import json
+import os
+from pathlib import Path
+
+CACHE_FILE = Path(__file__).parent.parent / "data" / "seed_cache.json"
 
 class GeminiClient:
     provider = "gemini"
@@ -23,8 +28,29 @@ class GeminiClient:
         self.model = model
         self.timeout_ms = timeout_ms
         self._client = None
-        self._cache: dict[tuple, LLMResult] = {}
+        self._cache: dict[str, LLMResult] = {}
         self._call_history: list[float] = []
+        self._load_cache()
+
+    def _load_cache(self):
+        if CACHE_FILE.exists():
+            try:
+                with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for k, v in data.items():
+                        self._cache[k] = LLMResult(**v)
+            except Exception:
+                pass
+
+    def _save_cache(self):
+        try:
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                # Convert LLMResult dataclasses to dicts for JSON
+                from dataclasses import asdict
+                data = {k: asdict(v) for k, v in self._cache.items()}
+                json.dump(data, f)
+        except Exception:
+            pass
 
     def _ensure_client(self):
         if self._client is None:
@@ -42,7 +68,8 @@ class GeminiClient:
         max_tokens: int,
         cache_key: str,
     ) -> LLMResult:
-        key = (self.model, json_mode, cache_key)
+        # Stringify key so it can be JSON serialized
+        key = f"{self.model}::{json_mode}::{cache_key}"
         if key in self._cache:
             return replace(self._cache[key], cached=True, latency_ms=0.0)
 
@@ -101,6 +128,7 @@ class GeminiClient:
             )
             if result.ok:
                 self._cache[key] = result
+                self._save_cache()
             return result
         except Exception as exc:  # any SDK/network/auth failure degrades to fallback
             return LLMResult(

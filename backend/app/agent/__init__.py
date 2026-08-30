@@ -8,7 +8,6 @@ from app.agent.orchestrator import (
     AgentRunResult,
     GeminiAgentLLM,
     MockAgentLLM,
-    OllamaAgentLLM,
     TriageAgentOrchestrator,
     build_default_agent_llm,
 )
@@ -27,7 +26,6 @@ __all__ = [
     "HitlError",
     "MAX_ITERATIONS",
     "MockAgentLLM",
-    "OllamaAgentLLM",
     "PrimaryAssessmentResult",
     "ReassessmentBus",
     "SYSTEM_PROMPT",

@@ -67,6 +67,19 @@ def _live_agent_board_enabled() -> bool:
     }
 
 
+from dataclasses import dataclass
+import time
+
+@dataclass
+class PendingIntake:
+    text: str
+    parsed: "ParsedIntake"
+    outcome: "PrimaryAssessmentResult"
+    explanation: "Explanation"
+    calls: list["LLMCall"]
+    meta: dict
+    expires_at: float
+
 class Department:
     def __init__(
         self,
@@ -89,22 +102,24 @@ class Department:
         self.agent_states: dict[str, TriageAgentState] = {}
         self.decision_sources: dict[str, DecisionSource] = {}
         self.overrides: dict[str, int] = {}
+        self.pending_intakes: dict[str, PendingIntake] = {}
         self._intake_seq = 0
+        use_fallback = not _live_agent_board_enabled()
         for p in build_cohort(surge_factor=surge_factor):
-            self._register_assessed(p)
+            self._register_assessed(p, force_fallback=use_fallback)
 
-    def _assess(self, patient: Patient) -> PrimaryAssessmentResult:
+    def _assess(self, patient: Patient, force_fallback: bool = False) -> PrimaryAssessmentResult:
+        use_fallback = force_fallback or self.force_fallback
         if self.agent_llm is not None:
             return run_primary_assessment(
                 patient,
                 llm=self.agent_llm,
-                force_fallback=self.force_fallback,
+                force_fallback=use_fallback,
             )
-        use_fallback = self.force_fallback or not _live_agent_board_enabled()
         return run_primary_assessment(patient, force_fallback=use_fallback)
 
-    def _register_assessed(self, patient: Patient) -> PrimaryAssessmentResult:
-        outcome = self._assess(patient)
+    def _register_assessed(self, patient: Patient, force_fallback: bool = False) -> PrimaryAssessmentResult:
+        outcome = self._assess(patient, force_fallback=force_fallback)
         pid = patient.patient_id
         self.patients[pid] = patient
         self.results[pid] = outcome.baseline_result
@@ -193,11 +208,27 @@ class Department:
             human_review_required=state.human_review_required,
         )
 
+    def reserve_next_patient_id(self) -> str:
+        self._intake_seq += 1
+        return f"N-{self._intake_seq:03d}"
+
+    def inject_assessed_patient(self, patient: Patient, outcome: "PrimaryAssessmentResult") -> str:
+        """Inject a pre-assessed patient directly into the board."""
+        pid = patient.patient_id
+        latest = max((p.arrival_epoch_min for p in self.patients.values()), default=0)
+        
+        patient.arrival_epoch_min = latest + 1
+        
+        self.patients[pid] = patient
+        self.results[pid] = outcome.baseline_result
+        self.agent_states[pid] = outcome.state
+        self.decision_sources[pid] = outcome.decision_source
+        self._audit_assessment(outcome)
+        return pid
+
     def add_patient(self, patient: Patient) -> str:
         """Register an intake patient and run primary assessment."""
-
-        self._intake_seq += 1
-        pid = f"N-{self._intake_seq:03d}"
+        pid = self.reserve_next_patient_id()
         latest = max((p.arrival_epoch_min for p in self.patients.values()), default=0)
         stamped = patient.model_copy(
             update={
@@ -271,6 +302,7 @@ class Department:
             display_name=p.display_name,
             age_years=p.age_years,
             age_band=interp.age_band,
+            sex=p.sex.value if hasattr(p.sex, "value") else str(p.sex),
             chief_complaint=p.chief_complaint,
             arrival_epoch_min=p.arrival_epoch_min,
             acuity=effective,
@@ -300,6 +332,7 @@ class Department:
             agent_baseline_agreement=ev.agent_baseline_agreement,
             agent_clinician_agreement=ev.agent_clinician_agreement,
             baseline_clinician_agreement=ev.baseline_clinician_agreement,
+            agent_status=state.status.value,
         )
 
     def board(self) -> BoardResponse:

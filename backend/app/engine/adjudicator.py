@@ -49,6 +49,8 @@ _NO_RESOURCE = [
     "suture removal", "rash", "sore throat",
     "no disease", "no illness", "no complaint", "no complaints",
     "well check", "checkup", "check-up", "healthy", "asymptomatic",
+    "itch", "itching", "itchy", "pruritus", "eczema", "dry skin",
+    "insect bite", "mosquito bite",
 ]
 _ONE_RESOURCE = ["laceration", "cut", "sprain", "minor", "x-ray", "splinter"]
 
@@ -212,7 +214,12 @@ def adjudicate(patient: Patient, interp: InterpreterOutput) -> AdjudicatorOutput
             rationale.append(
                 f"Decision C: estimated {resources} resource(s) -> provisional ESI {provisional}."
             )
-            drivers.append(f"{resources} expected resource(s)")
+            if resources == 0:
+                drivers.append("minor complaint; unlikely to need ED labs, imaging, or procedures")
+            elif resources == 1:
+                drivers.append("likely needs one focused ED evaluation or procedure")
+            else:
+                drivers.append("likely needs a multi-step ED work-up")
 
     # Decision D: danger-zone vitals for age upgrade a 3/4/5 to a 2.
     has_danger_vital = any(f.status == "critical" for f in interp.vital_flags) or \
@@ -239,7 +246,7 @@ def adjudicate(patient: Patient, interp: InterpreterOutput) -> AdjudicatorOutput
         routed = True
 
     if not drivers:
-        drivers = ["no high-risk features; low resource need"]
+        drivers = ["no high-risk features on the information given"]
 
     what_if = _what_if_ignored(acuity, clocks)
 

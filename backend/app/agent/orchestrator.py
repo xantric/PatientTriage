@@ -41,7 +41,6 @@ from app.domain.enums import AgentStatus, ToolCallStatus
 from app.domain.models import AgentToolCall, Patient, TriageAgentState
 from app.llm import config as llm_config
 from app.llm.gemini import GeminiClient
-from app.llm.ollama import OllamaClient
 from app.llm.types import LLMResult
 from app.models import LLMCall
 
@@ -51,7 +50,7 @@ def _now_iso() -> str:
 
 
 class AgentLLM(Protocol):
-    """Minimal completion interface. Tests inject mocks; prod uses Gemini/Ollama."""
+    """Minimal completion interface. Tests inject mocks; prod uses Gemini."""
 
     def complete(
         self,
@@ -117,64 +116,9 @@ class GeminiAgentLLM:
         )
 
 
-class OllamaAgentLLM:
-    """Wraps OllamaClient for the triage agent loop."""
-
-    def __init__(
-        self,
-        client: Optional[OllamaClient] = None,
-        *,
-        mode: Optional[str] = None,
-    ) -> None:
-        self.configured = (mode or llm_config.configured_mode()).strip().lower()
-        self.model = llm_config.model_name()
-        want = self.configured == "ollama"
-        self.live = want
-
-        if client is not None:
-            self._client = client
-            self.live = True
-            self.model = client.model
-        elif self.live:
-            self._client = OllamaClient(
-                self.model,
-                llm_config.ollama_base_url(),
-                llm_config.timeout_ms(),
-            )
-        else:
-            self._client = None
-
-    def complete(
-        self,
-        *,
-        system: str,
-        prompt: str,
-        cache_key: str,
-        max_tokens: int = 1024,
-    ) -> LLMResult:
-        if self._client is None:
-            return LLMResult(
-                text="",
-                model=self.model or "unavailable",
-                provider="ollama",
-                ok=False,
-                error="Ollama unavailable (SENTINEL_LLM is not ollama)",
-            )
-        return self._client.generate(
-            system=system,
-            prompt=prompt,
-            json_mode=True,
-            max_tokens=max_tokens,
-            cache_key=cache_key,
-        )
-
-
 def build_default_agent_llm() -> AgentLLM:
-    """Pick Ollama or Gemini from SENTINEL_LLM."""
+    """Build the Gemini agent LLM from SENTINEL_LLM / env."""
 
-    mode = llm_config.configured_mode()
-    if mode == "ollama":
-        return OllamaAgentLLM()
     return GeminiAgentLLM()
 
 

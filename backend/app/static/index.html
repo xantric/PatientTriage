@@ -24,32 +24,23 @@
       </div>
 
       <div class="topbar-actions">
-        <span class="ai-badge" id="ai-badge" title="Language model status">AI</span>
         <div class="switch" role="group" aria-label="Department load">
           <button type="button" data-surge="1" class="is-active">Normal load</button>
           <button type="button" data-surge="3">3&times; surge</button>
         </div>
-        <button type="button" id="refresh" class="ghost">Refresh</button>
       </div>
     </header>
   </div>
 
   <div class="page">
-  <div class="principles" aria-label="How Sentinel stays safe">
-    <span>Agent recommends, clinician decides</span>
-    <span>Deterministic engine is baseline only</span>
-    <span>Escalates when unsure</span>
-    <span>Every decision audited</span>
-  </div>
-
   <section class="kpis" id="kpis" aria-label="Department status"></section>
 
   <main class="grid">
     <section class="panel">
       <div class="panel-head board-head">
         <div>
-          <span class="eyebrow">Live triage board</span>
-          <h2>Waiting room, most urgent first</h2>
+          <span class="eyebrow">Triage board</span>
+          <h2>Waiting room</h2>
         </div>
         <span class="livechip"><i class="dot"></i><span id="board-note">Most urgent first.</span></span>
       </div>
@@ -72,15 +63,17 @@
     </section>
 
     <aside class="panel detail" id="detail" aria-live="polite">
-      <div class="placeholder">
-        <div class="ph-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none">
-            <circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="2" />
-            <path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-          </svg>
+      <div class="detail-scroll">
+        <div class="placeholder">
+          <div class="ph-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="2" />
+              <path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+          </div>
+          <h2>Select a patient</h2>
+          <p>Vitals, recommendation, and clinician actions appear here.</p>
         </div>
-        <h2>Pick a patient to see the reasoning</h2>
-        <p>Every score opens into the vitals read against the patient's age band, the drivers, the time-critical clocks, and the override control.</p>
       </div>
     </aside>
   </main>
@@ -88,22 +81,83 @@
   <section class="panel intake">
     <div class="panel-head intake-head">
       <div>
-        <span class="eyebrow">Free-text intake</span>
-        <h2>Add a patient from a note <span class="ai-chip" id="intake-mode">rule-based</span></h2>
-        <p class="muted">The model reads the note into structured fields. The triage agent recommends a priority; the clinician keeps final say.</p>
+        <span class="eyebrow">Intake</span>
+        <h2>Add a patient from a note</h2>
+        <p class="muted">Fill the fields, assess first, then add to the board if you want.</p>
       </div>
     </div>
     <div class="intake-body">
-      <div class="intake-input" style="width: 100%;">
-        <div style="display: flex; gap: 1rem; margin-bottom: 0.5rem;">
-          <input type="text" id="intake-name" placeholder="Patient Name" style="flex: 1; padding: 0.5rem;" />
-          <input type="text" id="intake-vitals" placeholder="Vitals (e.g. HR 90, BP 120/80)" style="flex: 2; padding: 0.5rem;" />
+      <div class="intake-input">
+        <div class="intake-fields">
+          <div class="field">
+            <label for="intake-name">Patient name</label>
+            <input type="text" id="intake-name" placeholder="e.g. James Wilson" />
+          </div>
+          <div class="field">
+            <label for="intake-age">Age</label>
+            <input type="text" id="intake-age" placeholder="e.g. 54" />
+          </div>
+          <div class="field">
+            <label for="intake-sex">Gender</label>
+            <select id="intake-sex">
+              <option value="">Select</option>
+              <option value="M">M</option>
+              <option value="F">F</option>
+              <option value="O">Others</option>
+            </select>
+          </div>
         </div>
-        <textarea id="intake-text" rows="3" placeholder="Chief complaint / Text note"></textarea>
-        <div class="intake-examples" id="intake-examples"></div>
+        <div class="field">
+          <label for="intake-vitals">Vitals</label>
+          <input type="text" id="intake-vitals" placeholder="e.g. HR 104, BP 118/70, SpO2 93%" />
+        </div>
+        <div class="field">
+          <label for="intake-text">Description / note</label>
+          <textarea id="intake-text" rows="3" placeholder="Chief complaint, arrival mode, onset..."></textarea>
+        </div>
+
+        <div class="intake-history">
+          <div class="intake-history-head">
+            <span class="intake-history-title">Past history</span>
+            <label class="intake-prior">
+              <input type="checkbox" id="intake-prior" />
+              Prior record on file
+            </label>
+          </div>
+          <div class="intake-chip-rows">
+            <div class="intake-chip-row" data-chip-kind="history">
+              <label for="intake-history-input">Medical history</label>
+              <div class="intake-chip-add">
+                <input type="text" id="intake-history-input" placeholder="e.g. hypertension" />
+                <button type="button" class="ghost intake-chip-add" data-chip-add="history">Add</button>
+              </div>
+              <div class="intake-chip-list" id="intake-history-chips"></div>
+            </div>
+            <div class="intake-chip-row" data-chip-kind="medications">
+              <label for="intake-meds-input">Medications</label>
+              <div class="intake-chip-add">
+                <input type="text" id="intake-meds-input" placeholder="e.g. metformin" />
+                <button type="button" class="ghost intake-chip-add" data-chip-add="medications">Add</button>
+              </div>
+              <div class="intake-chip-list" id="intake-meds-chips"></div>
+            </div>
+            <div class="intake-chip-row" data-chip-kind="allergies">
+              <label for="intake-allergies-input">Allergies</label>
+              <div class="intake-chip-add">
+                <input type="text" id="intake-allergies-input" placeholder="e.g. penicillin" />
+                <button type="button" class="ghost intake-chip-add" data-chip-add="allergies">Add</button>
+              </div>
+              <div class="intake-chip-list" id="intake-allergies-chips"></div>
+            </div>
+          </div>
+        </div>
+
         <div class="intake-actions">
-          <button type="button" class="primary" id="intake-run">Parse, Score & Add to Board</button>
+          <button type="button" class="primary" id="intake-run">Parse and score</button>
         </div>
+      </div>
+      <div class="intake-output" id="intake-output">
+        <p class="muted">After you parse and score, the recommendation and evidence will show here. You can then add the patient to the live board.</p>
       </div>
     </div>
   </section>
@@ -112,11 +166,10 @@
     <div class="tabs" role="tablist">
       <button type="button" role="tab" class="is-active" data-tab="audit" aria-selected="true">Audit trail</button>
       <button type="button" role="tab" data-tab="sim" aria-selected="false">Watcher simulation</button>
-      <button type="button" role="tab" data-tab="telemetry" aria-selected="false">AI telemetry</button>
     </div>
 
     <div class="tab-body" id="tab-audit">
-      <p class="muted">Append-only. Agent assessments and clinician HITL actions are logged with priorities, tools, and reasons.</p>
+      <p class="muted">Append-only log of assessments and clinician actions.</p>
       <div class="table-wrap">
         <table class="audit">
           <thead>
@@ -137,17 +190,12 @@
     </div>
 
     <div class="tab-body is-hidden" id="tab-sim">
-      <p class="muted">The Watcher re-checks waiting patients on a fixed attention budget, escalates anyone who deteriorates, and alerts on anyone past their safe wait. Run both loads to compare.</p>
+      <p class="muted">Re-check waiting patients, escalate deterioration, alert on unsafe waits.</p>
       <div class="sim-actions">
         <button type="button" class="primary" data-sim="1">Run normal load</button>
         <button type="button" class="ghost" data-sim="3">Run 3&times; surge</button>
       </div>
       <div id="sim-output"></div>
-    </div>
-
-    <div class="tab-body is-hidden" id="tab-telemetry">
-      <p class="muted">Every model call is timed and costed. In rule-based mode there are no tokens and no cost; add a key to see live latency and spend. The engine's decisions never depend on any of this.</p>
-      <div id="telemetry-output"></div>
     </div>
   </section>
 

@@ -57,6 +57,15 @@ def _list_after(labels: list[str], text: str) -> list[str]:
 def rule_parse(text: str) -> IntakeExtraction:
     t = text.strip()
 
+    patient_name = None
+    m = re.search(
+        r"(?:patient\s*name|full\s*name|\bname)\s*[:\-]\s*([A-Za-z][A-Za-z .'\-]{1,60})",
+        t,
+        re.IGNORECASE,
+    )
+    if m:
+        patient_name = re.sub(r"\s+", " ", m.group(1)).strip(" .,;:")
+
     # Age and sex, including the compact "78F" form.
     age = None
     compact = re.search(r"\b(\d{1,3})\s*([MmFf])\b", t)
@@ -71,12 +80,25 @@ def rule_parse(text: str) -> IntakeExtraction:
         if m:
             age = round(int(m.group(1)) / 12, 2)
     if age is None:
-        m = re.search(r"\bage\s*(\d{1,3})", t, re.IGNORECASE)
+        m = re.search(r"\bage\s*[:\-]?\s*(\d{1,3})", t, re.IGNORECASE)
         if m:
             age = float(m.group(1))
 
     sex = None
-    if compact:
+    labeled_sex = re.search(
+        r"\b(?:sex|gender)\s*[:\-]\s*(M|F|O|Male|Female|Other|Others)\b",
+        t,
+        re.IGNORECASE,
+    )
+    if labeled_sex:
+        token = labeled_sex.group(1).upper()
+        if token.startswith("M"):
+            sex = "M"
+        elif token.startswith("F"):
+            sex = "F"
+        else:
+            sex = "O"
+    elif compact:
         sex = compact.group(2).upper()
     elif re.search(r"\b(female|woman|girl)\b", t, re.IGNORECASE):
         sex = "F"
@@ -118,23 +140,78 @@ def rule_parse(text: str) -> IntakeExtraction:
     if bp:
         sbp, dbp = float(bp.group(1)), float(bp.group(2))
 
-    complaint = t
-    # Prefer a short clinical phrase when the note is only demographics + wellness.
-    wellness = re.search(
-        r"\b(no disease|no illness|no complaint|no complaints|well check|"
-        r"checkup|check-up|healthy|asymptomatic|nothing wrong)\b",
+    complaint = None
+    note_field = re.search(
+        r"(?:^|\n)\s*(?:note|description|chief\s*complaint|complaint|presenting)\s*[:\-]\s*([^\n]+)",
         t,
         re.IGNORECASE,
     )
-    if wellness:
-        complaint = wellness.group(1).lower()
-    else:
-        # Drop leading "21M," style prefixes so complaint is not the whole note.
-        stripped = re.sub(r"^\s*\d{1,3}\s*[MmFf]\s*[,:\-]?\s*", "", t).strip()
-        if stripped:
-            complaint = stripped
+    if note_field:
+        complaint = re.sub(r"\s+", " ", note_field.group(1)).strip(" .,;")
+    if not complaint:
+        wellness = re.search(
+            r"\b(no disease|no illness|no complaint|no complaints|well check|"
+            r"checkup|check-up|healthy|asymptomatic|nothing wrong)\b",
+            t,
+            re.IGNORECASE,
+        )
+        if wellness:
+            complaint = wellness.group(1).lower()
+        else:
+            # Drop labeled demographics so the complaint is not the whole form blob.
+            stripped = t
+            stripped = re.sub(
+                r"(?:patient\s*name|full\s*name|\bname)\s*[:\-]\s*[^\n.]+[.\n]?",
+                " ",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            stripped = re.sub(r"\bage\s*[:\-]?\s*\d{1,3}\b", " ", stripped, flags=re.IGNORECASE)
+            stripped = re.sub(
+                r"\b(?:sex|gender)\s*[:\-]\s*(?:M|F|O|Male|Female|Other|Others)\b",
+                " ",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            stripped = re.sub(
+                r"\bvitals?\s*[:\-]?\s*[^.\n]+",
+                " ",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            stripped = re.sub(
+                r"(?:^|\n)\s*prior\s*record\s*[:\-]?\s*(?:yes|no)\b",
+                " ",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            stripped = re.sub(
+                r"(?:^|\n)\s*(?:medical\s+)?history\s*[:\-]\s*[^\n]+",
+                " ",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            stripped = re.sub(
+                r"(?:^|\n)\s*medications?\s*[:\-]\s*[^\n]+",
+                " ",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            stripped = re.sub(
+                r"(?:^|\n)\s*allergies\s*[:\-]\s*[^\n]+",
+                " ",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            stripped = re.sub(r"^\s*\d{1,3}\s*[MmFf]\s*[,:\-]?\s*", "", stripped).strip()
+            stripped = re.sub(r"\s+", " ", stripped).strip(" .,;")
+            if stripped and len(stripped) >= 3:
+                complaint = stripped
+            else:
+                complaint = t
 
     return IntakeExtraction(
+        patient_name=patient_name,
         age_years=age,
         sex=sex,
         arrival_mode=arrival,
@@ -148,27 +225,80 @@ def rule_parse(text: str) -> IntakeExtraction:
         spo2=spo2,
         temp_c=temp,
         onset_minutes=_onset_minutes(t),
-        history=_list_after([r"h/?x of", r"history of", r"pmh"], t),
-        medications=_list_after([r"meds?", r"taking", r"on"], t),
-        allergies=_list_after([r"allerg(?:y|ies) to", r"allergic to"], t),
+        history=_list_after(
+            [r"(?:medical\s+)?history", r"h/?x of", r"history of", r"pmh"],
+            t,
+        ),
+        medications=_list_after([r"medications?", r"meds?", r"taking", r"on"], t),
+        allergies=_list_after([r"allergies", r"allerg(?:y|ies) to", r"allergic to"], t),
     )
 
 
 def template_explanation(result: TriageResult) -> str:
-    """A plain sentence built only from what the engine decided."""
+    """Two short clinical sentences justifying the ESI choice."""
 
     adj = result.adjudicator
-    name = result.patient.display_name or "This patient"
-    drivers = "; ".join(adj.top_drivers) if adj.top_drivers else "no high-risk features"
-    clock = ""
+    patient = result.patient
+    name = (patient.display_name or "").strip()
+    if not name or name.lower() in {"free-text intake", "walk-in"}:
+        name = "This patient"
+
+    complaint = (patient.chief_complaint or "").strip()
+    if len(complaint) > 90:
+        complaint = complaint[:87].rstrip() + "..."
+    complaint_bit = f'"{complaint}"' if complaint else "this presentation"
+
+    acuity = adj.acuity
+    if acuity == 1:
+        why = (
+            f"{complaint_bit} shows immediate life-threat findings "
+            "(airway, breathing, or circulation), so resuscitation comes first."
+        )
+    elif acuity == 2:
+        why = (
+            f"{complaint_bit} has high-risk or time-critical features, "
+            "so this patient should not wait in a standard queue."
+        )
+    elif acuity == 3:
+        why = (
+            f"{complaint_bit} looks stable for the main ED track but will "
+            "likely need a work-up rather than fast track alone."
+        )
+    elif acuity == 4:
+        why = (
+            f"{complaint_bit} is lower acuity and likely needs only limited "
+            "evaluation before discharge or follow-up."
+        )
+    else:
+        why = (
+            f"{complaint_bit} looks minor, with no high-risk vitals or red flags "
+            "on the information given, so fast track / waiting room is appropriate."
+        )
+
+    # Prefer concrete clinical points over internal labels when available.
+    clinical = [
+        d for d in adj.top_drivers
+        if d and "expected resource" not in d.lower() and "decision " not in d.lower()
+    ]
+    if clinical and acuity in (1, 2):
+        why = f"{complaint_bit}: {clinical[0]}."
+        if len(clinical) > 1:
+            why = f"{why} Also noted: {clinical[1]}."
+
+    parts = [f"{name} is ESI {acuity} ({adj.placement}). {why}"]
+
     for c in adj.time_critical_clocks:
         if c.minutes_remaining is not None and c.minutes_remaining > 0:
-            clock = f" A {c.name} clock is running with about {c.minutes_remaining} minutes left."
+            parts.append(
+                f"A {c.name} clock is running with about {c.minutes_remaining} minutes left."
+            )
             break
-    confidence = ""
+
     if adj.confidence_band.value == "low":
-        confidence = " Confidence is low, so a nurse should confirm before anyone waits."
-    return (
-        f"{name} is triaged ESI {adj.acuity}: {adj.placement}. "
-        f"The main reasons are {drivers}.{clock} {adj.what_if_ignored}{confidence}"
-    ).strip()
+        parts.append(
+            "Information is incomplete, so a nurse should confirm before this patient waits unattended."
+        )
+    elif adj.routed_to_nurse:
+        parts.append("Routed for nurse review.")
+
+    return " ".join(parts).strip()

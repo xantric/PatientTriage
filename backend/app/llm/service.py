@@ -14,7 +14,6 @@ from time import perf_counter
 
 from app.llm import config
 from app.llm.gemini import GeminiClient
-from app.llm.ollama import OllamaClient
 from app.llm.stub import rule_parse, template_explanation
 from app.llm.types import LLMResult
 from app.models import (
@@ -47,10 +46,29 @@ _PARSE_KEYS = (
 )
 
 _EXPLAIN_SYSTEM = (
-    "You write a two-sentence, plain-language explanation of an emergency triage "
-    "decision for a busy nurse. You are given the decision. Do not change the ESI "
-    "level and do not state a different number. Do not add clinical findings that "
-    "are not provided. No jargon and no dashes."
+    "You write a two-sentence clinical justification of an emergency triage ESI "
+    "level for a busy nurse. You are given the decision and the patient facts. "
+    "Do not change the ESI level and do not state a different number. Explain "
+    "why this level fits using the complaint, age, vitals, and risk in plain "
+    "language. Do not invent findings. Never use internal scoring jargon such as "
+    "drivers, expected resources, Decision A, Decision B, Decision C, or "
+    "resource count. No em dashes or en dashes."
+)
+
+_REASSESS_SYSTEM = (
+    "You are an expert triage agent. You are provided with a patient's entire clinical "
+    "record including initial vitals, history, and a recent clinician follow-up note. "
+    "Your job is to read the full context, reason over the free-text updates, and "
+    "determine the final ESI triage level (1-5).\n\n"
+    "Crucially: you MUST interpret qualitative text like 'everything is fine', 'stable', "
+    "or 'looks well' as clinical reassurance that overrides alarming initial numbers. "
+    "For example, if initial HR was 140 (which usually triggers ESI 2) but the clinician "
+    "note says 'patient resting comfortably, vitals stable', you should confidently "
+    "downgrade to ESI 3 or 4 based on the holistic picture.\n\n"
+    "Return a JSON object with exactly two keys:\n"
+    "- 'priority': an integer 1 through 5\n"
+    "- 'explanation': a 1-2 sentence clinical justification for this ESI level, written "
+    "for a busy nurse, incorporating the latest update."
 )
 
 
@@ -64,6 +82,8 @@ def _to_sex(value: str | None) -> Sex:
         return Sex.male
     if v in ("f", "female", "woman", "girl"):
         return Sex.female
+    if v in ("o", "other", "others", "non-binary", "nonbinary", "x"):
+        return Sex.other
     return Sex.other
 
 
@@ -113,13 +133,21 @@ def _extraction_to_patient(x: IntakeExtraction, patient_id: str, raw_text: str) 
     for key in ("age_years", "sex", "arrival_mode", "pain_score", "responsiveness",
                 "onset_minutes", "history", "medications", "allergies"):
         note(key, getattr(x, key))
+    if x.patient_name:
+        found.append("patient_name")
     complaint = (x.chief_complaint or raw_text).strip()
     if complaint:
         found.append("chief_complaint")
 
+    display = (x.patient_name or "").strip() or "Walk-in"
+    prior_from_text = bool(
+        re.search(r"prior\s*record\s*[:\-]?\s*yes\b", raw_text, re.IGNORECASE)
+    )
+    has_prior = prior_from_text or bool(x.history or x.medications or x.allergies)
+
     patient = Patient(
         patient_id=patient_id,
-        display_name=x.patient_name or "Free-text intake",
+        display_name=display,
         age_years=float(x.age_years) if x.age_years is not None else 40.0,
         sex=_to_sex(x.sex),
         arrival_mode=_to_arrival(x.arrival_mode),
@@ -131,7 +159,7 @@ def _extraction_to_patient(x: IntakeExtraction, patient_id: str, raw_text: str) 
         history=x.history,
         medications=x.medications,
         allergies=x.allergies,
-        has_prior_record=False,
+        has_prior_record=has_prior,
     )
     return patient, found
 
@@ -238,6 +266,18 @@ _WELLNESS_CUES = re.compile(
     re.IGNORECASE,
 )
 
+_MILD_DERM_CUES = re.compile(
+    r"\b(itch|itching|itchy|pruritus|rash|eczema|dry skin|"
+    r"insect bite|mosquito bite)\b",
+    re.IGNORECASE,
+)
+
+_DERM_DANGER_CUES = re.compile(
+    r"\b(anaphylaxis|lips swelling|tongue swelling|throat swelling|"
+    r"difficulty breathing|short of breath|wheezing|hives all over)\b",
+    re.IGNORECASE,
+)
+
 
 def _intake_information_gaps(parsed: ParsedIntake) -> list[str]:
     """Fields a clinician would need before trusting an ESI number."""
@@ -245,11 +285,12 @@ def _intake_information_gaps(parsed: ParsedIntake) -> list[str]:
     gaps: list[str] = []
     p = parsed.patient
     found = set(parsed.fields_found)
+    cc = (p.chief_complaint or "").strip()
     if "age_years" not in found:
         gaps.append("age")
-    if not (p.chief_complaint or "").strip() or len((p.chief_complaint or "").strip()) < 4:
+    if not cc or len(cc) < 4:
         gaps.append("chief complaint")
-    elif _WELLNESS_CUES.search(p.chief_complaint or "") and not any(
+    elif _WELLNESS_CUES.search(cc) and not any(
         getattr(p.vitals, k) is not None
         for k in ("heart_rate", "sbp", "spo2", "resp_rate", "temp_c")
     ):
@@ -260,6 +301,15 @@ def _intake_information_gaps(parsed: ParsedIntake) -> list[str]:
     )
     if not vital_ok:
         gaps.append("vitals (HR, BP, SpO2, or RR)")
+    # Mild skin complaints without vitals or airway/allergy danger should not
+    # present as a firm high-acuity score.
+    blob = f"{cc} {' '.join(p.history)}".lower()
+    if (
+        _MILD_DERM_CUES.search(blob)
+        and not _DERM_DANGER_CUES.search(blob)
+        and not vital_ok
+    ):
+        gaps.append("exam detail for skin complaint (spread, breathing, allergy signs)")
     return gaps
 
 
@@ -299,6 +349,23 @@ def _mentions_wrong_acuity(text: str, acuity: int) -> bool:
     return False
 
 
+def _scrub_explain_jargon(text: str) -> str:
+    """Strip leftover internal scoring phrases from a model explanation."""
+
+    cleaned = text.strip()
+    cleaned = re.sub(
+        r"\b\d+\s+expected resource\(s\)\b",
+        "limited ED evaluation needs",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\bexpected resources?\b", "ED evaluation needs", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(top\s*)?drivers?\b[:\-]?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bDecision\s+[A-D]\b[:\-]?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
 class LLMService:
     def __init__(self, mode: str | None = None) -> None:
         self._telemetry: list[LLMCall] = []
@@ -314,12 +381,7 @@ class LLMService:
         self.client = None
         self.gemini = None  # kept for older tests / callers
 
-        if self.configured == "ollama":
-            self.client = OllamaClient(
-                self.model, config.ollama_base_url(), config.timeout_ms()
-            )
-            self.live = True
-        elif self.configured in ("auto", "gemini"):
+        if self.configured in ("auto", "gemini"):
             self.live = self.key_present and self.package_available
             if self.live:
                 self.client = GeminiClient(
@@ -351,9 +413,7 @@ class LLMService:
         return call
 
     def status(self) -> LLMStatus:
-        if self.configured == "ollama":
-            provider_mode = "ollama"
-        elif self.live:
+        if self.live:
             provider_mode = "gemini"
         else:
             provider_mode = "rule-based"
@@ -433,14 +493,25 @@ class LLMService:
 
     def explain(self, result: TriageResult) -> tuple[Explanation, LLMCall]:
         acuity = result.adjudicator.acuity
+        patient = result.patient
+        complaint = (patient.chief_complaint or "").strip()
+        clinical_points = [
+            d for d in result.adjudicator.top_drivers
+            if d and "expected resource" not in d.lower()
+        ]
         if self.client is not None:
             facts = (
+                f"Patient name: {patient.display_name or 'unknown'}\n"
+                f"Age years: {patient.age_years}\n"
+                f"Chief complaint: {complaint or 'not stated'}\n"
                 f"ESI level (do not change): {acuity}\n"
                 f"Placement: {result.adjudicator.placement}\n"
-                f"Top drivers: {', '.join(result.adjudicator.top_drivers)}\n"
-                f"Time-critical: {', '.join(c.name for c in result.adjudicator.time_critical_clocks) or 'none'}\n"
+                f"Clinical points: {'; '.join(clinical_points) or 'none stated'}\n"
+                f"Time-critical clocks: "
+                f"{', '.join(c.name for c in result.adjudicator.time_critical_clocks) or 'none'}\n"
                 f"Confidence band: {result.adjudicator.confidence_band.value}\n"
-                f"If ignored: {result.adjudicator.what_if_ignored}"
+                f"Nurse review flagged: {result.adjudicator.routed_to_nurse}\n"
+                "Write exactly two short sentences justifying this ESI choice."
             )
             res = self.client.generate(
                 system=_EXPLAIN_SYSTEM, prompt=facts, json_mode=False,
@@ -449,8 +520,9 @@ class LLMService:
             call = self._record("explain", res, fell_back=False)
             verified = res.ok and 0 < len(res.text) <= 600 and not _mentions_wrong_acuity(res.text, acuity)
             if verified:
+                cleaned = _scrub_explain_jargon(res.text)
                 return (
-                    Explanation(text=res.text, source=res.provider, verified=True,
+                    Explanation(text=cleaned, source=res.provider, verified=True,
                                 patient_id=result.patient.patient_id),
                     call,
                 )
@@ -483,7 +555,7 @@ class LLMService:
 
     def triage_intake(self, text: str, patient_id: str) -> tuple[
         ParsedIntake,
-        TriageResult,
+        "PrimaryAssessmentResult",
         Explanation,
         list[LLMCall],
         dict,
@@ -515,7 +587,55 @@ class LLMService:
                 if label and label not in gaps:
                     gaps.append(label)
 
-        if (
+        needs_more = _needs_more_information(
+            parsed,
+            recommendation_priority=live_priority,
+            agent_terminal=terminal,
+        )
+
+        if needs_more:
+            explanation = _insufficient_explanation(gaps, patient_id)
+            calls.append(
+                self._record(
+                    "explain",
+                    LLMResult(
+                        text=explanation.text,
+                        model="rule-based",
+                        provider="rule-based",
+                        ok=True,
+                    ),
+                    fell_back=True,
+                )
+            )
+        elif (
+            rec is not None
+            and live_priority is not None
+            and (rec.reason_summary or "").strip()
+            and "deterministic fallback" not in rec.reason_summary.lower()
+            and not _mentions_wrong_acuity(rec.reason_summary, live_priority)
+        ):
+            # Prefer the agent's own clinical summary when it matches the level.
+            summary = _scrub_explain_jargon(rec.reason_summary.strip())
+            explanation = Explanation(
+                text=summary,
+                source="agent",
+                verified=True,
+                patient_id=patient_id,
+            )
+            calls.append(
+                self._record(
+                    "explain",
+                    LLMResult(text=summary, model="agent", provider="agent", ok=True),
+                    fell_back=False,
+                )
+            )
+            if live_priority != result.adjudicator.acuity:
+                result = result.model_copy(deep=True)
+                result.adjudicator.acuity = live_priority
+                result.adjudicator.top_drivers = list(
+                    rec.key_evidence[:5] or result.adjudicator.top_drivers
+                )
+        elif (
             rec is not None
             and live_priority is not None
             and live_priority != result.adjudicator.acuity
@@ -527,12 +647,22 @@ class LLMService:
             )
             explanation, explain_call = self.explain(explained)
             calls.append(explain_call)
+            result = explained
         else:
-            explanation, explain_call = self.explain(result)
+            # Use template/LLM explain so fallback path still gets clinical prose.
+            target = result
+            if rec is not None and live_priority is not None:
+                target = result.model_copy(deep=True)
+                target.adjudicator.acuity = live_priority
+                target.adjudicator.top_drivers = list(
+                    rec.key_evidence[:5] or target.adjudicator.top_drivers
+                )
+                result = target
+            explanation, explain_call = self.explain(target)
             calls.append(explain_call)
-            
+
         meta = {
-            "needs_more_information": False,
+            "needs_more_information": needs_more,
             "information_gaps": gaps,
             "decision_source": outcome.decision_source.value,
             "live_priority": live_priority,
@@ -542,7 +672,43 @@ class LLMService:
                 else str(outcome.state.status)
             ),
         }
-        return parsed, result, explanation, calls, meta
+        return parsed, outcome, explanation, calls, meta
 
+    def reassess(self, text: str, patient_id: str) -> tuple[int | None, Explanation | None, list[LLMCall]]:
+        """A direct LLM assessment bypassing the deterministic engine."""
+        if self.client is None:
+            return None, None, []
+            
+        calls = []
+        res = self.client.generate(
+            system=_REASSESS_SYSTEM, prompt=text, json_mode=True,
+            max_tokens=250, cache_key=f"reassess::{text}",
+        )
+        calls.append(self._record("reassess", res, fell_back=False))
+        if res.ok:
+            try:
+                # Clean and parse JSON
+                raw = res.text.strip()
+                if raw.startswith("```"):
+                    raw = re.sub(r"^```[a-zA-Z]*\n?|\n?```$", "", raw).strip()
+                if not raw.startswith("{"):
+                    start = raw.find("{")
+                    end = raw.rfind("}")
+                    if start >= 0 and end > start:
+                        raw = raw[start: end + 1]
+                data = json.loads(raw)
+                priority = int(data.get("priority", 0))
+                expl_text = data.get("explanation", "")
+                
+                if 1 <= priority <= 5 and expl_text:
+                    explanation = Explanation(
+                        text=expl_text, source="gemini", verified=True,
+                        patient_id=patient_id,
+                    )
+                    return priority, explanation, calls
+            except Exception:
+                pass
+                
+        return None, None, calls
 
 LLM = LLMService()

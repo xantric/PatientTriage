@@ -28,15 +28,12 @@ _load_dotenv()
 
 
 def configured_mode() -> str:
-    """auto (default), gemini, ollama, or stub."""
+    """auto (default), gemini, or stub."""
 
     return (os.getenv("SENTINEL_LLM") or "auto").strip().lower()
 
 
 def model_name() -> str:
-    mode = configured_mode()
-    if mode == "ollama":
-        return (os.getenv("OLLAMA_MODEL") or "llama3.1:8b").strip()
     return (os.getenv("GEMINI_MODEL") or "gemini-3.1-flash-lite").strip()
 
 
@@ -45,37 +42,18 @@ def api_key() -> str | None:
     return key.strip() if key else None
 
 
-def ollama_base_url() -> str:
-    return (os.getenv("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip().rstrip("/")
-
-
 def timeout_ms() -> int:
-    # Gemini rejects deadlines under 10s. Ollama local runs can need longer.
+    # Gemini rejects deadlines under 10s.
     try:
         value = int(os.getenv("SENTINEL_LLM_TIMEOUT_MS", "15000"))
     except ValueError:
         value = 15000
-    if configured_mode() == "ollama":
-        return max(value, 60000)
     return max(value, 10000)
 
 
 def package_available() -> bool:
     try:
         return importlib.util.find_spec("google.genai") is not None
-    except Exception:
-        return False
-
-
-def ollama_reachable() -> bool:
-    """Best-effort ping so status can show whether Ollama is up."""
-
-    try:
-        import httpx
-
-        with httpx.Client(timeout=2.0) as client:
-            r = client.get(f"{ollama_base_url()}/api/tags")
-            return r.status_code == 200
     except Exception:
         return False
 

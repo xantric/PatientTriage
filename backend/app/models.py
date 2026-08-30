@@ -298,6 +298,7 @@ class BoardRow(BaseModel):
     display_name: Optional[str] = None
     age_years: float
     age_band: str
+    sex: str = "O"
     chief_complaint: str
     arrival_epoch_min: int
     # Effective priority: clinician override if present, else agent (or fallback) rec.
@@ -325,6 +326,26 @@ class BoardRow(BaseModel):
     agent_baseline_agreement: Optional[bool] = None
     agent_clinician_agreement: Optional[bool] = None
     baseline_clinician_agreement: Optional[bool] = None
+    agent_status: str = "COMPLETED"
+
+
+class PatientUpdateRequest(BaseModel):
+    """Payload for submitting requested information to a patient."""
+    note: str = Field(..., min_length=1)
+    confirm: bool = Field(False, description="If true, apply the reassessment to the board")
+
+
+class PatientUpdateResponse(BaseModel):
+    """Response from the update endpoint with the new prediction."""
+    patient_id: str
+    parsed: ParsedIntake
+    result: TriageResult
+    explanation: Explanation
+    needs_more_information: bool = False
+    information_gaps: list[str] = Field(default_factory=list)
+    live_priority: Optional[int] = None
+    confirmed: bool = False
+    detail: Optional[PatientDetail] = None
 
 
 class BoardSummary(BaseModel):
@@ -398,7 +419,7 @@ class ParsedIntake(BaseModel):
 
     patient: Patient
     fields_found: list[str]
-    source: str  # gemini | ollama | rule-based
+    source: str  # gemini | rule-based
     note: Optional[str] = None
     raw_text: str
 
@@ -407,7 +428,7 @@ class Explanation(BaseModel):
     """A plain-language gloss on a decision the engine already made."""
 
     text: str
-    source: str  # gemini | ollama | template
+    source: str  # gemini | template
     verified: bool
     patient_id: Optional[str] = None
 
@@ -430,9 +451,9 @@ class LLMCall(BaseModel):
 
 
 class LLMStatus(BaseModel):
-    provider_mode: str  # gemini | ollama | rule-based
+    provider_mode: str  # gemini | rule-based
     model: str
-    configured_mode: str  # auto | gemini | ollama | stub
+    configured_mode: str  # auto | gemini | stub
     key_present: bool
     package_available: bool
     live: bool  # calling a live model provider
@@ -455,6 +476,7 @@ class TelemetrySummary(BaseModel):
 class IntakeRequest(BaseModel):
     text: str = Field(min_length=1, description="a free-text triage note")
     add_to_board: bool = False
+    preview_patient_id: Optional[str] = None
 
 
 class IntakeResponse(BaseModel):
@@ -463,6 +485,7 @@ class IntakeResponse(BaseModel):
     explanation: Explanation
     calls: list[LLMCall]
     added_patient_id: Optional[str] = None
+    preview_patient_id: Optional[str] = None
     # When true, UI must not present engine ESI as a firm triage decision.
     needs_more_information: bool = False
     information_gaps: list[str] = Field(default_factory=list)

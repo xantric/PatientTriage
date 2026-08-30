@@ -1,157 +1,158 @@
-# Sentinel: PatientTriage.ai (Team Sentinel)
+# Sentinel (PatientTriage.ai)
 
-Accenture Innovation Challenge 2026, Round 2 prototype.
+Team Sentinel. Accenture Innovation Challenge 2026. Track 2, Round 2.
 
-**Sentinel is an agent-first, human-in-the-loop emergency triage decision-support system.** It is not autonomous medical decision-making.
+Sentinel is an agent-first, human-in-the-loop triage helper for the emergency department. It recommends urgency and placement. It does not diagnose, treat, or replace the clinician.
 
-Primary flow: patient → agent state → Gemini agent → tools → recommendation → clinician HITL.
+## Live demo
 
-The older Interpreter / Adjudicator pipeline remains as **baseline, fallback, and evaluation** only. The Watcher observes the waiting room, emits events, and never owns the final recommendation.
+Website: [https://sentinel-5roi.onrender.com/](https://sentinel-5roi.onrender.com/)
 
-Full architecture write-up: [`docs/final-architecture.md`](docs/final-architecture.md).
+Either open that link, or follow the steps below to run it on your own machine. Free Render may take 30 to 90 seconds on the first open after idle. The live path uses Gemini when configured; otherwise the deterministic engine is the fallback.
 
-Legacy deterministic stages (still present for baseline / fallback / evaluation):
+<!-- ## Demo video -->
 
-1. **Interpreter**: structures sparse intake, computes indices (shock index,
-   time since onset), flags vitals against **age-banded** danger zones, and
-   scores data completeness into a confidence band.
-2. **Adjudicator**: assigns an ESI-style acuity (1 to 5), runs time-critical
-   clocks (stroke, STEMI, sepsis), sets a monitoring tier, and explains itself.
-3. **Watcher**: monitors the waiting queue, spends a fixed attention budget on
-   the sickest and most overdue patients, re-records their vitals, and only ever
-   escalates monitoring ("priority ratchet"). A timer backstop alerts on any patient who
-   passes their safe wait, so a saturated queue can never hide a patient.
+<!-- Demo video: add the public link here before submission. -->
 
-Design rule that runs through everything: **under-triage is worse than
-over-triage**, so danger-zone vitals only push acuity up, and genuine
-uncertainty escalates and routes to a clinician rather than settling on a
-comfortable middle score.
+## Implementation approach
 
-![Sentinel triage board](docs/screenshot.png)
+1. Bias toward safety when unsure. Missing a critical patient is worse than over-calling a minor one. Low confidence goes to a nurse. Thin notes can ask for more information instead of forcing a firm score.
+2. Hybrid model. A Gemini agent is the main reasoner. It uses tools, proposes ESI 1 to 5, and can request info or escalate. A deterministic engine stays as baseline, fallback, and evaluation so the app still runs with no API key.
+3. Clinician always decides. Accept, modify, override, request more information, or escalate. Modify and override need a reason. Both agent and clinician choices are kept for audit.
+4. Keep watching the waiting room. The Watcher re-checks on unsafe waits or worsening vitals, and only escalates. Demo covers normal load and 3x surge.
+5. Simulated data only. About 25 fixed-seed patients, including ambiguous, pediatric, geriatric, zero-history, and one deterioration case (P-011). Real patient data can be added via the dashboard.
+6. One process for the demo. FastAPI serves the API and a simple HTML/CSS/JS board. No frontend build step.
 
-The live board with the most urgent patient opened automatically: vitals read against the patient's age band, the drivers behind the score, a plain-language read (here written by Gemini and verified against the engine's level), and the override control.
+Assumed jurisdiction: HIPAA (United States). Thresholds are illustrative, not clinical advice.
 
-## Round 2 deliverables
+More detail: [docs/final-architecture.md](docs/final-architecture.md) and [docs/business-proposal.md](docs/business-proposal.md).
 
-- **Business proposal**: [`docs/business-proposal.md`](docs/business-proposal.md). Problem framing, solution design, target users, business case and impact, phased roadmap, risks and mitigations, plus data protection and compliance.
-- **Working prototype**: this repository. Run it with the commands below.
-- **Pitch**: [`docs/pitch.md`](docs/pitch.md) is the slide-by-slide script and speaker notes, built to be delivered live off the running board. The deck itself is [`docs/Sentinel_Pitch.pptx`](docs/Sentinel_Pitch.pptx), a custom Sentinel-branded PowerPoint (no Accenture logo) regenerated with `python tools/build_pitch_deck.py`.
-- **Demo video**: _add the link here before submitting._
-- **Build plan**: [`docs/round2-plan.md`](docs/round2-plan.md). How the prototype maps to the graded checklist, and the calibration decisions worth defending.
+## Solution architecture
 
-## How it meets the Track 2 brief
+```text
+Intake / board
+    -> agent state
+    -> Gemini agent + tools
+    -> recommendation
+    -> clinician HITL
 
-Every minimum prototype expectation for PatientTriage.ai, and where to see it.
+Deterministic engine: baseline / fallback / evaluation
+Watcher: waiting-room events -> reassessment when needed
+```
+
+| Part | What it does | Main path |
+| --- | --- | --- |
+| UI | Board, patient detail, intake, audit, Watcher sim | `backend/app/static/` |
+| API | Board, patients, intake, HITL, audit, simulation | `backend/app/api.py` |
+| Agent | Tool use, recommend, request info, escalate | `backend/app/agent/` |
+| Engine | Age-banded vitals, ESI score, clocks, confidence | `backend/app/engine/` |
+| Watcher | Surge, deterioration, unsafe-wait alerts | `backend/app/agent/event_watcher.py`, `backend/app/engine/watcher.py` |
+| Audit | Append-only log with required reasons | `backend/app/audit.py` |
+| LLM | Optional Gemini; rule-based stub if offline | `backend/app/llm/` |
+
+### Files in this repository
+
+```text
+README.md
+docs/
+  business-proposal.md
+  final-architecture.md
+  Sentinel_Pitch.pptx
+backend/
+  app/                 # API, agent, engine, LLM, UI
+  tests/
+  requirements.txt
+  .env.example
+  run_server.py
+  run_demo.py
+  run_watch.py
+```
+
+### Track 2 checklist
 
 | Requirement | Where to see it |
 | --- | --- |
-| Triage scoring on 15 to 20 simulated records | 25-patient cohort. The board at `/`, or `python run_demo.py`. |
-| One ambiguous, one pediatric or geriatric, one zero-history case | Ambiguous elderly weakness (P-005), febrile toddler (P-003) and atypical geriatric MI (P-002), zero-history walk-in (P-004). |
-| Behaviour under a 3x surge | The surge toggle on the board, or `python run_watch.py`. |
-| No score without a confidence indicator | A confidence band on every board row and in the drill-down; low confidence routes to a nurse. |
-| Capture a clinician override and show what it logs | The override form in the inspector, the audit-trail tab, and `tests/test_api.py`. |
-| Waiting-room deterioration monitoring | The Watcher tab and `run_watch.py`. P-011 arrives stable and is caught deteriorating while waiting. |
-| Age-specific vital thresholds | `engine/thresholds.py`, shown as "vitals read against age band" in the drill-down. |
-| Named jurisdiction and an audit trail | HIPAA (US) assumed; append-only, reason-required trail in `app/audit.py`. |
+| 15 to 20+ simulated patients | Board at `/`, or `python run_demo.py` |
+| Ambiguous, pediatric/geriatric, zero-history | P-005, P-003, P-002, P-004 |
+| 3x surge | Surge toggle, Watcher tab, `python run_watch.py` |
+| Confidence on every score | Board column and patient detail |
+| Clinician override and log | HITL form and Audit trail tab |
+| Waiting-room deterioration | Watcher sim, patient P-011 |
+| Age-specific vitals | `backend/app/engine/thresholds.py` |
+| Named jurisdiction and audit | HIPAA (US), `backend/app/audit.py` |
 
-## Layout
+## Dependencies
 
-```
-sentinel/
-  backend/
-    app/
-      models.py            # shared pydantic contracts
-      api.py                 # FastAPI service (board, override, audit, intake, telemetry)
-      state.py               # in-memory department: cohort, results, overrides
-      audit.py               # append-only override audit trail
-      engine/
-        thresholds.py        # age-banded vital ranges + shock index cutoffs
-        interpreter.py       # Agent 1
-        adjudicator.py       # Agent 2 (ESI + time-critical clocks + safety net)
-        deterioration.py     # sim-only vitals drift model for the waiting room
-        watcher.py           # Agent 3 + waiting-room simulation + surge harness
-        pipeline.py          # compose agents
-      llm/
-        config.py            # .env + mode/model/key + price table (all optional)
-        gemini.py            # guarded google-genai client (lazy import, cache)
-        stub.py              # rule-based intake parser + template explainer
-        service.py           # parse + score + explain, ESI-flip guard, telemetry
-      data/
-        generator.py         # deterministic synthetic cohort (+ 3x surge mode)
-      static/                # triage board UI (no build step)
-    tests/
-      test_engine.py         # safety tests (assert no under-triage)
-      test_watcher.py        # Watcher tests (never de-escalate, catch decline)
-      test_api.py            # override + audit trail tests
-      test_llm.py            # parser, deterministic scoring, ESI-flip guard, telemetry
-    run_demo.py              # print the triage board + key-case detail
-    run_watch.py             # normal vs 3x surge waiting-room simulation
-    run_server.py            # serve the API and the board
-    requirements.txt
-    .env.example             # copy to .env to enable Gemini (optional)
-```
+Required:
 
-## Run it (Python 3.11+, from `sentinel/backend`)
+- Python 3.11 or newer
+- Packages in [backend/requirements.txt](backend/requirements.txt): FastAPI, Uvicorn, Pydantic, httpx, python-dateutil, pytest
+- Optional LLM packages in the same file: `google-genai`, `python-dotenv`
+
+Optional:
+
+- Gemini API key from [Google AI Studio](https://aistudio.google.com)
+
+Without a key, the prototype still runs using the rule-based parser and deterministic fallback.
+
+Copy [backend/.env.example](backend/.env.example) to `backend/.env` for optional LLM settings. Do not commit `.env`.
+
+## How to run
+
+Install:
 
 ```powershell
+cd backend
 python -m pip install -r requirements.txt
-python run_server.py      # then open http://127.0.0.1:8000 (API docs at /docs)
-python run_demo.py        # triage board in the terminal
-python run_watch.py       # waiting-room sim: normal load vs 3x surge
-python -m pytest -q       # safety tests
 ```
 
-On macOS or Linux use `python3` in place of `python`. The commands are otherwise identical.
+On macOS or Linux, use `python3` instead of `python`.
 
-The UI is plain HTML, CSS and JavaScript served by FastAPI, so there is no build
-step and the whole prototype runs from one process. That is a deliberate choice:
-the plan flags demo fragility as a risk, and one command is harder to break on
-stage than two. The API returns plain JSON, so a React front end could be
-dropped in later without touching the engine.
-
-## Demo in two minutes
-
-1. Start the server and open http://127.0.0.1:8000. The board loads with the most urgent patient already open on the right.
-2. Point at the confidence bar and "vitals read against age band", then open the zero-history walk-in (P-004): confidence drops and it routes to a nurse instead of guessing.
-3. Flip to 3x surge, open the Watcher tab, and show P-011 caught deteriorating in the waiting room while the longest unsafe wait climbs.
-4. On any patient, record an override with a reason, then open the audit-trail tab to show exactly what was logged.
-
-## The LLM layer (optional)
-
-The model does exactly two jobs, both at the edges: it reads a free-text note
-into structured intake fields, and it rewrites a decision into plain language.
-It never sets an acuity. That number always comes from the deterministic engine,
-which is the answer to "isn't this just an LLM guessing at medicine".
-
-It is off by default. With no key, the app runs in rule-based mode: a regex
-parser handles intake and a template writes the explanation, so every feature
-still works offline. The Gemini packages are already in `requirements.txt`, so
-to switch it on you only need a key. Copy `.env.example` to `.env` and paste in
-a free key from [Google AI Studio](https://aistudio.google.com):
+Start the demo:
 
 ```powershell
-copy .env.example .env   # macOS or Linux: cp .env.example .env
+python run_server.py
 ```
 
-`.env` is gitignored, so your key is never committed. Guards that keep it safe:
-calls run at temperature 0 and are cached (same demo, same words, almost no
-quota), a hard timeout falls back to the template, and a generated explanation
-that names a different ESI level is rejected. Every call is timed and costed in
-the telemetry tab.
+Open http://127.0.0.1:8000  
+API docs: http://127.0.0.1:8000/docs
 
-## Status
+Optional LLM setup:
 
-- [x] Age-banded thresholds (infant / child / adolescent / adult / geriatric)
-- [x] Synthetic cohort with required edge cases (ambiguous, pediatric, geriatric, zero-history)
-- [x] Interpreter + Adjudicator with confidence and time-critical clocks
-- [x] Safety tests: 0 under-triage on the labelled cohort
-- [x] Watcher: waiting-room monitoring, deterioration ratchet, timer backstop, 3x surge
-- [x] FastAPI service + live triage board with patient drill-down
-- [x] Override capture + append-only audit log
-- [x] LLM free-text parsing and plain-language explanations (optional, rule-based fallback)
-- [x] Runtime telemetry (latency, tokens, cost)
-- [x] Custom Sentinel-branded UI (white and purple, no third-party logos), opens the most urgent patient by default
-- [x] Business proposal and pitch deck (see Round 2 deliverables)
+```powershell
+copy .env.example .env
+```
 
-Assumptions are illustrative; assumed jurisdiction is HIPAA (US). Thresholds
-are adapted from standard references and are configurable, not clinical advice.
+Edit `.env`, then restart `python run_server.py`.
+
+Other commands:
+
+```powershell
+python run_demo.py      # terminal board
+python run_watch.py     # normal vs 3x surge Watcher report
+python -m pytest -q     # tests
+```
+
+Quick walkthrough:
+
+1. Open the board. The most urgent patient opens on the right.
+2. Check confidence and age-banded vitals. Open P-004 for zero history.
+3. Switch to 3x surge. Open Watcher simulation and find P-011.
+4. Record an override with a reason. Open Audit trail.
+5. Optional: add a patient from a note, parse and score, then add to the board.
+
+## Other deliverables
+
+| Item | Location |
+| --- | --- |
+| Live website | [https://sentinel-5roi.onrender.com/](https://sentinel-5roi.onrender.com/) |
+| Working prototype | `backend/` |
+| This README | `README.md` |
+| Business proposal | [docs/business-proposal.md](docs/business-proposal.md) |
+| Pitch deck | [docs/Sentinel_Pitch.pptx](docs/Sentinel_Pitch.pptx) |
+| Architecture notes | [docs/final-architecture.md](docs/final-architecture.md) |
+| Demo video | Link in the Demo video section above |
+
+## Disclaimer
+
+This is a competition prototype on simulated data. Not for clinical use. Not a medical device.

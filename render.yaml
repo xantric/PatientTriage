@@ -1,0 +1,24 @@
+# Render Blueprint for Sentinel (PatientTriage.ai)
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: sentinel
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      # 3.14 has no pydantic-core wheels; build from source fails on Render.
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      - key: SENTINEL_LLM
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: SENTINEL_LLM_TIMEOUT_MS
+        value: "120000"
+      - key: SENTINEL_LIVE_AGENT_BOARD
+        value: "1"
+      - key: GEMINI_API_KEY
+        sync: false

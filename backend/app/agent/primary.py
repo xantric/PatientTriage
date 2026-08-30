@@ -25,7 +25,6 @@ from app.agent.orchestrator import (
     AgentLLM,
     AgentRunResult,
     GeminiAgentLLM,
-    OllamaAgentLLM,
     TriageAgentOrchestrator,
     build_default_agent_llm,
 )
@@ -154,18 +153,6 @@ def run_primary_assessment(
                 baseline_result=baseline,
                 decision_source=DecisionSource.deterministic_fallback,
                 fallback_reason="Gemini unavailable",
-            )
-        if isinstance(agent_llm, OllamaAgentLLM) and not agent_llm.live:
-            apply_deterministic_fallback(
-                state,
-                baseline,
-                reason="Ollama unavailable",
-            )
-            return PrimaryAssessmentResult(
-                state=state,
-                baseline_result=baseline,
-                decision_source=DecisionSource.deterministic_fallback,
-                fallback_reason="Ollama unavailable",
             )
 
     orch = TriageAgentOrchestrator(agent_llm)

@@ -1,161 +1,223 @@
-# Sentinel: a safety-first triage assistant for the emergency department
+# Sentinel: Business Proposal
 
-Team Sentinel. Track 2, PatientTriage.ai. Accenture Innovation Challenge 2026.
+**Team Sentinel · Track 2: PatientTriage.ai · Accenture Innovation Challenge 2026, Round 2**
 
-Business proposal for Round 2. This document frames the problem, lays out the solution and who it serves, makes the business case, sets a phased roadmap, and is honest about the risks and how we defuse them. The working prototype that backs every claim here lives in this repository.
+This proposal covers what Round 2 asks for: problem framing, solution design, target users, business case and impact, a phased roadmap, and key risks with mitigations. It also answers the Track 2 solutioning areas (data strategy, decision model, workflow, safety-first design, adoption, data protection, scalability) against a working prototype in this repository. Every clinical claim below is decision support under clinician authority, not autonomous medical care.
 
-## The one-line version
+---
 
-Emergency departments have seconds to decide who is sick, using messy and incomplete information, and the cost of getting it wrong is not symmetric. Missing a critical patient is far worse than being cautious with a minor one. Sentinel is a decision-support layer that scores every arrival with a transparent, age-aware clinical engine, says out loud how confident it is, keeps watching the people who are still waiting, and hands the final call to a clinician with a full audit trail. It is built to be safe when it is unsure, not to win on average accuracy.
+## 1. Problem framing
 
-## The problem, framed honestly
+Emergency triage is a two-minute decision made with bad information while more patients keep arriving. A nurse must assign urgency, place the patient, and move on. The Round 2 brief is right that this is not a clean ranking problem.
 
-A nurse at the front of an emergency department is often triaging one patient while three more arrive. They have a chief complaint that may be vague, a set of vitals that may be incomplete, and sometimes no prior record at all. From that they have to assign an urgency level, decide where the patient goes, and move on, all in under a couple of minutes. This is hard for reasons that do not go away with more staff or a better paper form.
+**Age changes the meaning of every number.** A heart rate of 150 is an emergency in a calm adult and roughly normal in a distressed toddler. A fever of 38.5°C is read differently in a three-year-old than in a seventy-five-year-old. A single adult-calibrated scorer applied to everyone creates silent safety risk: nothing on the screen says the rule was wrong for this body.
 
-The same numbers mean different things at different ages. A heart rate of 150 is an emergency in a calm adult and roughly normal in a distressed toddler. A fever of 38.5 degrees is read very differently in a three-year-old than in a seventy-five-year-old. A single adult-calibrated rule set applied to everyone hides real danger, and that danger is silent: nothing on the screen tells you the rule was wrong for this patient.
+**Symptoms overlap and under-report.** Ambiguous weakness in an older adult can be sepsis, a silent heart attack, or something benign. Patients minimize pain. Presentation does not map cleanly onto a five-level scale, yet a number still has to be chosen.
 
-The costs are asymmetric. Over-triage wastes a bit of capacity. Under-triage can kill someone. Sepsis mortality climbs with every hour antibiotics are delayed. Stroke and heart attack have hard treatment windows measured in minutes. A patient sent to the waiting room as "not urgent" can deteriorate while no one is looking, and crowded departments are exactly where that happens most.
+**Data at intake is uneven.** About half of arrivals have useful history on file and half are effectively strangers. A system that assumes rich records fails worst on the people it knows least, which is the wrong failure mode for a safety tool.
 
-Data is uneven. Roughly half of arrivals have a useful history on file and half are effectively strangers. A model that quietly assumes rich data will behave worst on the patients it knows least about, which is the wrong failure mode for a safety tool.
+**Under-triage and over-triage are not equal.** Over-triage wastes some capacity. Under-triage can kill. Stroke, STEMI, and sepsis have hard treatment windows measured in minutes. Any solution that optimizes for average accuracy will, under uncertainty, quietly settle in the middle. The brief requires the opposite: **bias toward escalation when unsure, and show that choice in the prototype.**
 
-And trust is fragile. Staff are fatigued and time-pressured. A tool that cries wolf gets ignored inside a week. A tool that acts like an oracle and hides its reasoning gets overridden and distrusted. Either way it fails, not because the math was wrong but because no one used it.
+**Triage does not end at the desk.** People sit in the waiting room and deteriorate while the department is busiest. A score-once tool forgets them. The brief explicitly requires ongoing monitoring of the queue, with re-assessment when safe wait is exceeded or vitals worsen.
 
-So the real problem is not "predict acuity accurately." It is "be genuinely useful and genuinely safe under time pressure and bad data, and earn a fatigued clinician's trust." That reframing drives every design choice below.
+**Trust and liability are binding constraints.** Staff are fatigued. A tool that cries wolf gets ignored. A tool that acts like an oracle gets overridden and distrusted. Clinical accountability means every recommendation must stay reviewable and overridable, with an audit trail that meets health-data regulation.
 
-## Who this is for
+So the real problem is not "predict ESI accurately." It is: **be useful and safe under time pressure and sparse data, keep watching the people who are waiting, leave the final call with a clinician, and earn a fatigued nurse's trust.**
 
-The daily users are the people at the front of the department.
+---
 
-The triage nurse is the primary user. Sentinel gives them a fast, explained starting point and a place to record what they saw that the engine did not. It never takes the decision away from them.
+## 2. Solution design
 
-The charge nurse and flow coordinator get the board-level view: who is waiting, who is overdue for a re-check, where the pressure is building during a surge. The waiting-room watcher is really built for them.
+### 2.1 What Sentinel is
 
-The emergency physician gets a defensible, auditable rationale for each acuity, the running time-critical clocks, and a clear record of any override and why it was made.
+Sentinel is an **agent-first, human-in-the-loop emergency triage decision-support system**. It recommends priority and placement; it does not diagnose, treat, discharge, or replace clinical judgment.
 
-The economic buyers are hospital leadership. The Chief Nursing Officer and Chief Medical Officer care about patient safety, mistriage rates, and the medico-legal exposure that comes with them. Hospital operations care about throughput, wait times, and patients who leave without being seen. The CIO and CISO care about integration, data protection, and whether this is one more thing to secure and maintain.
+Primary path:
 
-Patients are the indirect beneficiary and never a direct user. The whole point is that the sick ones get seen sooner and the waiting ones are not forgotten.
+> Intake → agent state → Gemini triage agent (tools) → recommendation → clinician HITL
 
-## The solution
+A deterministic clinical engine (Interpreter + Adjudicator with age-banded thresholds) stays in the loop as **baseline, fallback, and evaluation**, not as a silent override of a successful agent recommendation. A **Watcher** observes the waiting room, emits events, and wakes reassessment when something meaningful changes. It never owns the final clinical call.
 
-Sentinel is three cooperating agents around one firm principle: deterministic clinical logic sets the score, and a language model is used only at the edges, for reading free text and writing a plain-language explanation. The model never sets the acuity. That single line is what makes the system auditable and what keeps it on the safe side of medical-device regulation.
+### 2.2 Data strategy
 
-**The Interpreter** takes messy intake, a complaint, whatever vitals exist, arrival mode, history, and turns it into structured findings. It maps every vital against age-banded danger zones, computes derived signals like the shock index, notes what is missing, and produces a confidence score that reflects how much it actually had to work with. Sparse data lowers confidence rather than being papered over.
+We design for incomplete intake, not for the average chart.
 
-**The Adjudicator** assigns the urgency level on a recognized five-level scale, runs the time-critical clocks for stroke, heart attack, and sepsis, sets a monitoring tier, and writes out the top drivers, a short "what happens if this is ignored" note, and a confidence band. It is pure deterministic scoring, so a clinician can audit any decision in seconds. Two rules make it safe by construction: danger-zone vitals for a patient's age can only push urgency up, and genuine uncertainty escalates rather than settling on a comfortable middle score.
+**Inputs we use when present:** age, sex, arrival mode, chief complaint (free text or structured), pain score, responsiveness (AVPU), vitals (HR, RR, SpO2, BP, temperature), onset time, history, medications, allergies, and whether a prior record exists.
 
-**The Watcher** is the part most triage tools miss. It keeps watching everyone who is still in the waiting room. It spends a limited attention budget by risk, checking the sick often and the stable rarely, re-records their vitals, re-runs triage, and ratchets a patient up (never down) the moment they worsen or pass the maximum safe wait for their level. A timer backstop raises an alert on anyone overdue even when the department is saturated, so a busy queue can never quietly hide a deteriorating patient.
+**How we weigh them:** life-threat and age-banded danger-zone vitals dominate. Time-critical syndromes (stroke, STEMI, sepsis) open running clocks. Resource need and complaint cues refine mid/low acuity. Missing fields are first-class: completeness feeds confidence, and sparse notes (for example mild skin complaints without vitals) trigger an explicit **needs more information** path instead of a firm high-acuity number.
 
-Uncertainty is a first-class output, not a footnote. Every score ships with a confidence band. Low confidence does not auto-clear a patient; it routes them to a nurse. We treat this as the product's spine, because a triage tool that is quietly wrong is more dangerous than one that admits it does not know.
+**Mixed data availability:** the synthetic cohort is built so roughly half of patients have prior history and half do not, matching the brief. Zero-history walk-ins drop confidence and route to nurse review rather than inventing a story.
 
-The clinician always has the final say, in both directions, and nothing changes silently. An override writes an append-only audit record with the engine's original score, the new score, who changed it, why, a timestamp, and the engine version that produced the call. The record cannot be edited or deleted, and it cannot be written without a reason.
+**Free text:** an optional LLM parses nurse notes into structured fields. Identifiers are kept out of model prompts where possible; if the model is off, slow, or wrong, a rule-based parser still runs so the desk never blocks on AI availability.
 
-The language model earns its keep in two narrow places. It reads a nurse's free-text note into structured fields so the engine can score it, and it writes a two-sentence plain-language explanation of the decision. Both paths are guarded: the model runs at temperature zero with a cache and a hard timeout, any explanation that names a different urgency level than the engine chose is rejected, and if the model is slow, wrong, or simply not configured, a deterministic rule-based parser and a template explanation take over. The app runs completely offline with no model at all. That is not a fallback we bolted on; it is the default.
+### 2.3 Decision model (hybrid, with uncertainty as a product feature)
 
-One engine flexes across very different hospitals because thresholds, staffing, and re-check intervals are configuration, not code. The same core runs a small rural department and a large urban trauma center by changing a config, not by forking the product.
+We use a **hybrid** on purpose, because the brief asks teams to show when deterministic logic vs. an LLM is used and why.
 
-## What the prototype already proves
+| Layer | Role | Why |
+| --- | --- | --- |
+| **Gemini triage agent** | Primary reasoner. Chooses tools dynamically (vitals, history, shock index, trends, completeness, baseline peek, Watcher state). Forms priority 1–5, urgency, pathway, monitoring, confidence, evidence. May `REQUEST_INFORMATION` or `ESCALATE`. | Handles ambiguity and overlapping presentations better than a fixed rule tree alone, while staying constrained by tools and a hard iteration budget. |
+| **Deterministic engine** | Age-banded vital interpretation, ESI-style baseline, time-critical clocks, safety-net escalation under low confidence. Exposed as a tool and used automatically if the agent fails, times out, or cannot complete. | Auditable reference, offline continuity, and evaluation partner. Never silently overwrites a valid agent recommendation. |
+| **Uncertainty handling** | Confidence on every recommendation. Low confidence and material gaps → nurse route or "needs more information," not a quiet middle score. Budget exhaustion → await human, do not invent a priority. | Matches the brief's escalate-under-uncertainty requirement and makes the choice visible in the UI and audit trail. |
+| **Evaluation store** | Agent vs baseline vs clinician agreement fields | Observes disagreement for governance. We do not train the agent to mimic the baseline as the objective. |
 
-The prototype is not a slide. It runs, and it demonstrates every item on the Round 2 checklist for this track.
+Safety invariants enforced in code and tests: danger-zone vitals for age can only push urgency up; the Watcher's monitoring floor only ratchets upward; clinician override and modify require a reason; the original agent recommendation is never overwritten by HITL.
 
-It scores a cohort of simulated patients into the five levels, well past the fifteen-to-twenty minimum, each with drivers and a confidence band. The cohort deliberately includes the hard cases the brief asks for: an atypical geriatric heart attack that does not present with classic chest pain, a febrile toddler where adult thresholds would mislead, an ambiguous elderly weakness, and a walk-in with almost no data on file.
+### 2.4 Workflow design
 
-It behaves under a simulated three-times surge. Flip the load and the board fills, the Watcher reallocates its budget to the highest risk, and the longest unsafe wait grows, which is exactly the pressure a real department feels and exactly what leadership needs to see modeled.
+**At the desk.** The live board lists waiting patients most urgent first, each with priority, confidence, flags, and any time-critical clock. Opening a patient shows evidence, gaps, baseline comparison, and clinician actions: Accept, Modify, Override, Request more information, Escalate. Modify and Override require a reason and a new priority.
 
-It never returns a score without a confidence indicator, and it routes low-confidence cases to a nurse instead of clearing them.
+**Intake.** A nurse can paste or type a short note (name, age, vitals, description), run parse-and-score, review the recommendation (or the insufficient-information gate), then optionally add the patient to the live board.
 
-It captures a clinician override and shows precisely what it logs, in an audit trail that callers cannot mutate.
+**Quiet shift vs surge.** A load toggle simulates normal volume vs **3× surge**. Under surge, arrivals multiply, the Watcher reallocates a fixed attention budget toward highest risk and most overdue patients, and the board shows rising unsafe-wait pressure. Same engine, different load: that is the rural-vs-trauma flex story in miniature.
 
-It catches a waiting-room deterioration: one seemingly stable patient worsens while waiting, and the Watcher escalates them before a human would have looked again.
+**After the desk.** The Watcher keeps observing everyone still waiting. Meaningful deterioration or unsafe-wait events wake agent reassessment; stable ticks do not burn model calls. That is how we keep cost and alert noise down during a quiet night and still catch decline during a crunch.
 
-A test suite guards the safety properties directly. The tests assert that no named case is under-triaged, that the Watcher never lowers an acuity, that an override needs a reason, and that the audit trail is immutable. We test for safety, not just for correctness.
+### 2.5 Safety-first design (including waiting-room monitoring)
 
-## The business case and impact
+This is non-negotiable in the brief, so it is non-negotiable in the product.
 
-The value is a mix of hard operational savings and softer but larger safety and liability upside. We are deliberate about which is which, and every number here is illustrative and tied to a stated assumption, not a claim about a specific hospital.
+1. **Escalate under uncertainty.** Low confidence with red flags or mid acuity escalates one level in the deterministic safety net; the agent is instructed to request information or escalate rather than guess. Sparse mild complaints without vitals refuse a trusted score.
+2. **Waiting-room Watcher.** Monitors the queue with acuity-aware safe-wait limits, a limited re-check budget, simulated vitals drift for designated cases, and a timer backstop so saturation cannot hide a patient. Re-assessment triggers when wait exceeds the safe threshold for severity **or** when re-recorded vitals worsen.
+3. **Upward-only ratchet.** Monitoring floor and Watcher logic never softens priority because the department got busy.
+4. **Clinician always final.** Every completed recommendation enters awaiting-clinician. Agent and clinician decisions are stored separately for audit.
+5. **Immutable trail.** Append-only audit records: who, what, when, why, before/after priority, model/engine version. No edit, no delete, no reasonless override.
 
-The safety lever is the biggest and the hardest to put a single number on. Under-triage of genuinely high-acuity patients is a recurring finding in studies of triage reliability, and each missed critical case carries both a human cost and a serious medico-legal one. Sentinel attacks this directly by biasing toward escalation, by being age-aware where flat rules fail, and by watching the queue for deterioration. Even a small reduction in missed critical cases is worth more than the entire cost of the system, which is the core of the pitch to a Chief Medical Officer.
+### 2.6 What the prototype already demonstrates
 
-The throughput lever is easier to quantify. Patients who leave without being seen are a direct loss of revenue and a safety risk, and their rate rises sharply when the department is crowded and triage is slow. For an illustrative mid-size department of forty thousand visits a year, moving the leave-without-being-seen rate down by even one percentage point is on the order of four hundred patients a year who stay and get care. Faster, more consistent triage and a queue that actively re-checks waiting patients both push in that direction.
+Mapped to Round 2 minimum prototype expectations:
 
-The time-critical lever compounds the safety case. Shaving minutes off recognition for stroke, heart attack, and sepsis maps onto outcomes that are well established in the literature. Sentinel's running clocks and escalate-on-uncertainty behavior are built to surface these earlier.
+| Expectation | In Sentinel |
+| --- | --- |
+| Score 15–20+ simulated patients | Deterministic cohort of 25 (named edge cases + fillers); live board at `/` |
+| Ambiguous, pediatric/geriatric, zero-history | Ambiguous elderly weakness; febrile toddler + atypical geriatric MI; Emma Jones walk-in with sparse vitals |
+| Behaviour under 3× surge | Surge toggle + Watcher simulation report |
+| No score without confidence | Confidence on every row and drill-down; low confidence routes to nurse; intake can abstain |
+| Clinician override + what is logged | HITL form + Audit trail tab; reason required |
+| Waiting-room deterioration monitoring | Watcher catches designated decline (e.g. UTI → sepsis drift) before a human would have looked again |
+| Age-specific thresholds | `engine/thresholds.py`; UI shows vitals read against age band |
+| Named jurisdiction + audit | HIPAA (US) assumed; append-only trail in `app/audit.py` |
 
-On cost, the system is cheap to run precisely because the core is deterministic. The expensive part, the language model, is optional, cached, and used in two narrow places, so cost per patient is a fraction of a cent even with it turned on, and zero with it off. We can show that live in the telemetry panel.
+---
 
-The business model is a per-department annual SaaS subscription, tiered by size measured in annual visits, plus a one-time integration engagement. An illustrative range is on the order of tens of thousands of dollars a year for a small department up to low six figures for a large trauma center, which is small next to the cost of a single missed critical case or the ongoing cost of crowding. Multi-site health systems buy at the system level. We would price the pilot low or free in exchange for the validation data and a reference site, because the first credible outcomes study is worth more than the first year of revenue.
+## 3. Target users
 
-## Market opportunity
+**Primary user: triage nurse.** Needs a fast, explained starting point, a clear confidence signal, and a one-glance place to accept, adjust, or demand more information without fighting the UI.
 
-The addressable market is large and non-discretionary. The United States alone has on the order of five thousand emergency departments handling well over a hundred million visits a year, and crowding is a named, worsening problem that hospitals are under regulatory and reputational pressure to fix. Beyond the US, any system that uses a structured triage scale is a candidate, which covers most of the developed world and a growing share of everywhere else.
+**Charge nurse / flow coordinator.** Needs the board-level view under load: who is waiting, who is overdue, where surge pressure is building. The Watcher and surge mode are built for them.
 
-We think about it in three rings. The total market is every emergency department that triages patients. The serviceable market in the near term is departments in our starting jurisdiction with a modern enough record system to integrate, which is a large minority. The obtainable market at first is a handful of pilot sites whose outcomes become the evidence base for everyone after them. This is a market where one strong published outcome moves more deals than any amount of marketing.
+**Emergency physician.** Needs a defensible rationale, running time-critical clocks, and a clean record of any change and why.
 
-## Getting a fatigued staff to actually use it
+**Economic buyers:** Chief Nursing Officer and Chief Medical Officer (safety, mistriage, liability), hospital operations (throughput, leave-without-being-seen), CIO/CISO (integration, security, maintainability).
 
-Adoption is where triage tools usually die, so we treat change management as part of the product, not an afterthought.
+**Patients** are the indirect beneficiary, never a direct user. The point is that the sick are seen sooner and the waiting are not forgotten.
 
-We start in shadow mode. For the first weeks Sentinel scores every patient but changes nothing; the department keeps triaging exactly as before. This does two things: it builds the local validation record that leadership needs, and it lets nurses see the tool agree with them again and again before it is ever in the critical path. Trust is earned by being right quietly first.
+---
 
-We keep the clinician in charge, always, in both directions, with a one-line reason. Nobody is being graded or overruled by a machine. The override is framed as the clinician teaching the system, and it goes into the record next to the engine's original call.
+## 4. Business case and impact
 
-We fight alert fatigue on purpose. The Watcher spends a budget by risk instead of pinging constantly, the confidence band tells a nurse when to trust a score at a glance, and escalations come with the reason attached so they are actionable rather than noise. Over-flagging is a failure mode we design against, not a side effect we tolerate.
+Assumed setting: US emergency departments, **about 100 to 500+ visits per day**, five-level severity (ESI-style), mixed prior-record availability (~50/50), **HIPAA** as the regulatory frame. Figures below are illustrative and tied to those assumptions.
 
-We fit the existing workflow. The recommendation shows up where triage already happens, the reasoning is one glance, and recording an override is a few seconds. If it adds clicks, it loses.
+**Safety impact (primary).** Under-triage of high-acuity patients is a recurring failure in triage reliability studies. Sentinel attacks it with age-aware vitals, escalate-on-uncertainty, insufficient-information gates, and continuous waiting-room monitoring. Even a small reduction in missed critical cases dominates the cost of the system for a CMO.
 
-And we make the wins visible. When the Watcher catches a deteriorating patient in the waiting room, that is a story the whole department hears about, and it is the single most persuasive thing for adoption.
+**Throughput impact.** Leave-without-being-seen rises when the department is crowded and triage is slow. For an illustrative mid-size site (~40,000 visits/year), cutting LWBS by one percentage point is on the order of hundreds of patients a year who stay and receive care. Faster, more consistent first pass plus active re-check of the queue both push that way.
 
-## Data protection, compliance, and jurisdiction
+**Time-critical impact.** Running clocks for stroke, STEMI, and sepsis, plus escalate-when-unsure behavior, are meant to surface treatable windows earlier. Outcome literature on door-to-needle / door-to-balloon / sepsis bundles makes minutes matter; we do not invent site-specific minute savings here.
 
-We assume HIPAA in the United States as the governing regime, and the design follows from it. A different jurisdiction, GDPR plus national health law in the EU for example, changes the specifics of consent and retention but not the shape of the architecture.
+**Cost to run.** The expensive piece (Gemini) is optional, cached, iteration-capped, and skipped on quiet Watcher ticks. Deterministic fallback keeps the desk alive offline. Cost per patient with the model on is a fraction of a cent at flash-lite rates; with the model off it is zero AI spend.
 
-Patient data is handled on a minimum-necessary basis, encrypted in transit and at rest, and access is role-based so a user sees only what their role needs. The audit trail is append-only and immutable, retained per the hospital's stated policy, which is exactly what an override must legally record: who, what, when, why, and against what the engine originally said. Model development uses de-identified data.
+**Commercial model.** Per-department annual SaaS, tiered by annual visit volume (illustrative: tens of thousands USD/year for a small ED up to low six figures for a large trauma center), plus a one-time integration engagement. Pilots priced low or free in exchange for validation data and a reference site: the first credible outcomes study is worth more than year-one revenue.
 
-The language model is the obvious privacy question, and our answer is built in. The model never receives patient identifiers, only structured clinical fields, and it never sets a decision. In a real deployment the model call would run against a provider covered by a Business Associate Agreement or an on-premises open model, so no protected health information leaves the hospital's control without a contract that permits it. Because the model is optional and cached, a site with a strict policy can run Sentinel entirely on the deterministic core with the model switched off and lose none of the clinical logic.
+**Market shape.** Thousands of EDs in the US alone, 100M+ visits/year, crowding as a standing operational and reputational pressure. Near-term serviceable market: departments with enough digital maturity for read-only integration. Obtainable market at first: a handful of shadow pilots whose measured outcomes become the evidence base.
 
-On medical-device regulation, we have a deliberate strategy rather than a hope. Sentinel is designed to fit the Non-Device Clinical Decision Support category under the FDA's final guidance: it displays and analyzes clinical information, it offers a recommendation rather than a specific directive command, and, critically, it lets the clinician independently review the basis for that recommendation instead of relying on it as a black box. The transparent drivers and rationale are not just a trust feature, they are the regulatory argument. We would confirm the specific classification with regulatory counsel before any clinical deployment, and we would not overstate it before then.
+---
 
-## Scalability
+## 5. Adoption and change management
 
-Scaling is mostly a configuration story, which is the point. The clinical thresholds, the staffing model, the re-check intervals, and the surge behavior are all config, so the same engine serves a hundred-visit rural department and a five-hundred-visit trauma center without a code change. The deterministic core is light enough to run at the edge inside a hospital, and the optional model layer scales independently because it is cached and used sparingly. Integration is the real work, and we sequence it deliberately in the roadmap below rather than pretending every hospital's record system looks the same.
+Triage tools usually die in the break room, not in the architecture review. We treat adoption as product work.
 
-## Phased roadmap
+**Shadow mode first.** Weeks of scoring beside real triage without changing decisions. Leadership gets a local validation record; nurses see agreement (and honest disagreement) before the tool is in the critical path.
 
-We build outward from a safe, small, honest demo toward a validated clinical tool, and we protect the timeline by freezing scope early and treating the fancy items as the first things to cut.
+**Clinician in charge, always.** Accept / modify / override with a required reason. Framed as the clinician teaching the system, not being graded by it.
 
-**Now, the prototype.** All three agents, the live board, the surge toggle, confidence on every score, override and audit, and the optional model layer, all working on simulated data. This is complete and is what backs this proposal.
+**Fight alert fatigue.** Risk-weighted Watcher budget, reasons on every escalation, confidence at a glance, and abstain-when-sparse instead of inventing drama on thin notes.
 
-**Next, a shadow-mode pilot at one department.** Integrate read-only with the hospital's record and patient-flow systems over standard health-data interfaces, run Sentinel alongside the real triage without touching decisions, and measure agreement, mistriage, and the cases the Watcher would have caught. The deliverable is a local validation record and a first outcomes signal.
+**Fit the existing two minutes.** Recommendation where triage already happens; override in a few seconds; if it adds clicks, it loses.
 
-**Then, supervised live use.** Turn the recommendation on in the workflow with the clinician firmly in control, keep measuring, and tune thresholds to the site. Add the deterioration monitoring into the live queue. The deliverable is safe, measured, everyday use at one site.
+**Make catches visible.** When the Watcher escalates a deteriorating waiting patient, that story is the strongest adoption asset in the building.
 
-**After that, multi-site and the learning loop.** Roll the same configurable engine to departments of different size and specialty, and stand up a feedback loop where overrides and outcomes improve the thresholds over time, with expert validation in the loop and without any single site's data leaking to another. Autonomy stays graduated: the system earns a higher level of independence only as its measured accuracy at a site supports it, and a human can always dial it back.
+---
 
-**Longer term, the network effect.** With enough validated sites, the learning loop and the outcomes evidence become the moat. Each new hospital is easier to win because the last one has data behind it.
+## 6. Patient data protection and compliance
 
-## Key risks and how we defuse them
+**Jurisdiction assumed: HIPAA (United States).** That choice drives audit design, retention, consent posture, and what a clinician override must record (who, what, when, why, against what was recommended). An EU deployment would remap the same architecture onto GDPR plus national health law; the control pattern (minimum necessary, role-based access, immutable trail, BAA or on-prem model) stays.
 
-**Clinical safety and liability.** The core risk is that a wrong score contributes to harm. We defuse it structurally: the engine biases to escalation, uncertainty routes to a human, the clinician always has the final say, and every decision and override is auditable. We never position Sentinel as a diagnosis or a replacement for judgment, and we start in shadow mode so it proves itself before it is ever in the critical path.
+**Controls in the design:** encrypt in transit and at rest in a real deployment; role-based access; minimum-necessary fields to the model; no inventing of patient data by the agent; append-only audit with mandatory reasons for override/modify; de-identified or synthetic data in this competition prototype.
 
-**Regulatory classification.** If a regulator treats it as a medical device, the path to deployment lengthens. We design to the Non-Device Clinical Decision Support criteria from the start, keep the reasoning transparent so a clinician can independently review it, and confirm classification with counsel before clinical use rather than assuming.
+**Model posture:** preferred path is a BAA-covered Gemini (or equivalent) provider, or a private deployment of the same agent pattern. Sites that refuse external LLM calls run deterministic fallback and lose none of the age-banded clinical reference logic.
 
-**Alert fatigue and workaround.** If it nags, staff route around it and it dies. We spend the Watcher's attention by risk, attach a reason to every escalation, show confidence at a glance, and treat over-flagging as a bug. Shadow mode also tunes the noise down before anyone has to act on it.
+**Regulatory stance:** positioned as Non-Device Clinical Decision Support under FDA final guidance intent: displays and analyzes information, recommends rather than commands, and lets the clinician independently review the basis (evidence, gaps, baseline comparison). We would confirm classification with counsel before any clinical deployment and do not claim clearance today.
 
-**Data privacy.** Patient data is sensitive and the model is an external dependency. We keep identifiers away from the model entirely, run it under a Business Associate Agreement or on-premises, encrypt everything, gate access by role, and let a strict site run with the model off and lose no clinical logic.
+---
 
-**Integration reality.** Hospital systems vary enormously and integration is where prototypes stall. We sequence it as read-only shadow integration first over standard interfaces, prove value before asking for deeper hooks, and keep the engine useful even where data is thin.
+## 7. Scalability
 
-**Bias and equity.** A safety tool that is worse for some groups is unacceptable. Age-banding is the first step away from one-size-fits-all, and part of the pilot's job is to measure performance across demographics explicitly and tune for it, not to assume fairness.
+Reference range from the brief: departments from ~100 to 500+ visits per day, different specialty mix and technical maturity.
 
-**Adoption.** Covered above and worth repeating as a risk: the tool fails if it is not trusted. Shadow mode, clinician control, transparency, and visible catches are the answer.
+**Same core, different config.** Age bands, safe-wait tables, staffing/slots, and surge multipliers are configuration, not forks. A rural ED and an urban trauma center share the engine and differ in thresholds and capacity.
 
-## What sets Sentinel apart
+**Compute shape.** Deterministic path is light enough for edge or hospital VM. Agent calls scale independently, are cached, and are gated (board live-agent load is opt-in so a demo or a frugal site does not fire N model calls on every refresh).
 
-Most triage tools do one of two things. Either they are a static scoring calculator that treats every age the same and stops caring the moment the patient sits down in the waiting room, or they are a black-box risk model that is accurate on average and impossible to audit in the two minutes a nurse actually has. Sentinel is neither. It is age-aware where flat rules are silently unsafe, it keeps watching the queue instead of scoring once and forgetting, it says how confident it is and escalates when it is not, it keeps the clinician in charge with a real audit trail, and it uses a language model only where a language model helps, never as the source of the decision. The combination, safe by construction and transparent enough to trust, is the differentiator.
+**Integration sequence.** Read-only shadow on standard health-data interfaces first (ADT / vitals / census), prove value, then deeper write-back. The prototype stays useful on thin data so immature sites are not blocked on perfect EHR wiring.
 
-## Assumptions
+**Learning later, carefully.** Multi-site feedback on overrides and outcomes can tune thresholds with expert validation. Autonomy only rises as measured site accuracy earns it. No silent cross-site PHI leakage. Full federated learning is roadmap, not a claim of the current prototype.
 
-The data in the prototype is simulated and de-identified. We assume HIPAA as the jurisdiction and a five-level severity scale as the triage framework. Clinical thresholds are adapted from standard references and are configurable per hospital; they are illustrative and would be set with clinical governance at each site. Every financial figure in this proposal is illustrative and tied to a stated assumption. This is a competition prototype and a business proposal, not clinical advice or a regulatory filing.
+---
 
-## The ask
+## 8. Phased roadmap
 
-To take this from a working prototype to a validated tool, we need one partner emergency department willing to run Sentinel in shadow mode, read-only access to its patient records and flow data over standard interfaces, and a clinical champion to help tune thresholds and interpret the results. In return the site gets an early, safe view of its own mistriage and crowding, and a say in how the tool works. The first credible outcomes study is the thing that unlocks the rest of this roadmap, and that is what we are asking for the chance to build.
+**Phase 0 (now): Working prototype.** Agent-first assessment, deterministic baseline/fallback/evaluation, HITL, immutable audit, age-banded engine, synthetic cohort with required edge cases, Watcher + 3× surge, optional Gemini. Simulated data only. **Done in this repo.**
+
+**Phase 1: Shadow pilot at one ED.** Read-only integration, no decision change, measure agreement, mistriage proxies, and Watcher catches that would have fired. Deliverable: local validation pack for clinical governance.
+
+**Phase 2: Supervised live.** Recommendation in the live workflow with clinician firmly in control; tune thresholds to the site; waiting-room monitoring on real re-checks. Deliverable: safe everyday use at one site with outcome logging.
+
+**Phase 3: Multi-site + governed learning.** Roll configurable engine across size/specialty mix; feedback loop on overrides and outcomes with human validation; graduated autonomy (hospital dial) that can always be turned down.
+
+**Phase 4: Evidence moat.** Published or shared outcomes become the sales engine. Each new hospital is easier because the last one has data behind it.
+
+---
+
+## 9. Key risks and mitigations
+
+| Risk | Mitigation |
+| --- | --- |
+| Wrong recommendation contributes to harm | Escalate under uncertainty; abstain on sparse mild cases; clinician always final; shadow mode before live; agent and clinician records kept separate |
+| Agent "sounds sure" on thin data | Needs-more gate; confidence bands; tool-grounded evidence; iteration budget → await human; deterministic fallback on failure |
+| Treated as a medical device / blocked path | Design for transparent CDS; counsel before clinical use; never market as diagnosis or autonomous care |
+| Alert fatigue → workaround | Risk-weighted Watcher budget; reason on every alert; surge vs quiet behavior differs by design |
+| Privacy / unauthorized use | HIPAA controls; minimize PHI to models; BAA or on-prem; model-off mode; immutable access-relevant audit |
+| Integration stalls the pilot | Read-only shadow first; standard interfaces; engine useful on incomplete intake |
+| Bias / inequity across age or demographics | Age-banding as baseline fairness move; pilot measurement across groups before wider roll-out |
+| Adoption failure | Shadow mode, clinician control, visible Watcher catches, workflow fit |
+
+---
+
+## 10. Assumptions (stated clearly)
+
+- Competition prototype on **simulated, de-identified** data; not for clinical use without validation and governance.
+- Triage framework: **five-level ESI-style** severity.
+- Department size reference: **~100–500+ visits/day**.
+- Prior records available for **~half** of arrivals.
+- Jurisdiction: **HIPAA (US)**.
+- Thresholds adapted from standard references (ESI danger-zone vitals, age-banded HR/RR/BP, SIPA-style shock index); **configurable per hospital**, illustrative in this build.
+- Financial figures are directional illustrations, not quotes for a named hospital.
+- Gemini is optional; the desk must function with deterministic fallback alone.
+
+---
+
+## 11. The ask
+
+To move from a working prototype to a validated tool we need **one partner emergency department** willing to run Sentinel in shadow mode, **read-only access** to records and flow data over standard interfaces, and a **clinical champion** to help tune thresholds and interpret disagreement. In return the site gets an early, safe view of its own mistriage and crowding patterns, and a real say in how the assistant behaves.
+
+We built a triage assistant that is safe when it is unsure, keeps watching the people who are waiting, uses an agent where language and ambiguity need judgment and a deterministic engine where auditability and fallback matter, and always leaves the decision with the clinician. That is the product Round 2 asked us to prove.

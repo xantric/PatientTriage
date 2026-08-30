@@ -1,13 +1,12 @@
 "use strict";
 
-const state = { surge: 1, selected: null, board: null, llm: null };
-
-const EXAMPLES = [
-  "78F by ambulance, feeling unwell and short of breath, sweaty. HR 104, BP 118/70, SpO2 93%, hx of diabetes and CAD",
-  "3yo high fever and very drowsy since morning, HR 158, RR 42, temp 39.8",
-  "34M needs a refill for his blood pressure tablets, otherwise well",
-  "feels a bit off",
-];
+const state = {
+  surge: 1,
+  selected: null,
+  board: null,
+  lastIntakeText: null,
+  intakeChips: { history: [], medications: [], allergies: [] },
+};
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -27,6 +26,14 @@ function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
   ));
+}
+
+function sexLabel(sex) {
+  const v = String(sex || "").toUpperCase();
+  if (v === "M") return "M";
+  if (v === "F") return "F";
+  if (v === "O" || v === "OTHER" || v === "OTHERS") return "Others";
+  return v || "—";
 }
 
 async function api(path, options) {
@@ -58,7 +65,7 @@ function renderKpis(summary) {
   const cards = [
     { label: "In department", value: summary.total, sub: `load x${state.surge}`, icon: "dept" },
     { label: "Immediate", value: immediate, sub: "ESI 1 and 2", cls: immediate ? "danger" : "", icon: "alert" },
-    { label: "Nurse review", value: summary.routed_to_nurse, sub: "low confidence", cls: summary.routed_to_nurse ? "warn" : "", icon: "eye" },
+    { label: "Nurse review", value: summary.routed_to_nurse, sub: "pending", cls: summary.routed_to_nurse ? "warn" : "", icon: "eye" },
     { label: "Escalated", value: summary.escalated_for_uncertainty, sub: "on uncertainty", icon: "up" },
     { label: "Time-critical", value: summary.active_clocks, sub: "clocks running", icon: "clock" },
     { label: "Overrides", value: summary.overrides, sub: "logged", cls: summary.overrides ? "brand" : "", icon: "edit" },
@@ -87,16 +94,19 @@ function renderBoard(board) {
       const arrow = r.override_direction === "escalate" ? "up" : r.override_direction === "de-escalate" ? "down" : "";
       flags.push(`<span class="tag override">override ${arrow}</span>`);
     }
+    if (r.agent_status === "GATHERING_INFORMATION") {
+      flags.push('<span class="tag pending">needs info</span>');
+    }
     const clocks = r.clocks.length
       ? r.clocks.map((c) => `<span class="tag clock${c.includes("missed") ? " missed" : ""}">${esc(c)}</span>`).join(" ")
       : NIL;
 
     return `
-      <tr data-id="${esc(r.patient_id)}" class="${state.selected === r.patient_id ? "is-selected" : ""}">
+      <tr data-id="${esc(r.patient_id)}" class="${state.selected === r.patient_id ? "is-selected" : ""} ${r.agent_status === 'GATHERING_INFORMATION' ? 'is-pending' : ''}">
         <td>${esiChip(r.acuity)}</td>
         <td>
           <div class="pname">${esc(r.display_name || "Walk-in")}</div>
-          <div class="pid">${esc(r.patient_id)}</div>
+          <div class="pid">${esc(r.patient_id)} &middot; ${esc(sexLabel(r.sex))}</div>
         </td>
         <td>${r.age_years}<div class="pid">${esc(r.age_band)}</div></td>
         <td class="complaint">${esc(r.chief_complaint)}</td>
@@ -156,6 +166,40 @@ function renderVitals(flags) {
   return `<div class="section"><h3>Vitals read against age band</h3><table class="vitals">${rows}</table></div>`;
 }
 
+function renderHistory(patient) {
+  const prior = !!patient.has_prior_record;
+  const history = patient.history || [];
+  const meds = patient.medications || [];
+  const allergies = patient.allergies || [];
+  const zeroHistory = !prior && !history.length && !meds.length && !allergies.length;
+
+  const block = (label, items) => {
+    const body = items.length
+      ? `<ul class="past-list">${items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`
+      : `<p class="past-empty">None on file</p>`;
+    return `
+      <div class="past-block">
+        <div class="past-label">${esc(label)}</div>
+        ${body}
+      </div>`;
+  };
+
+  return `
+    <div class="section past-history">
+      <div class="past-history-head">
+        <h3>Past history</h3>
+        <span class="tag ${prior ? "nurse" : "flag"}">${prior ? "prior record on file" : "no prior record"}</span>
+      </div>
+      ${zeroHistory
+        ? `<p class="past-zero">First-time presentation. No history, medications, or allergies on file. Triage relies on what is observed now.</p>`
+        : `<div class="past-history-stack">
+            ${block("Medical history", history)}
+            ${block("Medications", meds)}
+            ${block("Allergies", allergies)}
+          </div>`}
+    </div>`;
+}
+
 function renderOverrideForm(row) {
   /* kept for compatibility; HITL panel is primary */
   return "";
@@ -164,37 +208,57 @@ function renderOverrideForm(row) {
 function renderHitl(agent, row) {
   if (!agent) return "";
   const options = [1, 2, 3, 4, 5].map((l) =>
-    `<option value="${l}" ${l === (agent.priority || row.acuity) ? "selected" : ""}>P${l}</option>`
+    `<option value="${l}" ${l === row.acuity ? "selected" : ""}>P${l}</option>`
   ).join("");
-  
-  const needsReview = agent.human_review_required;
-  const acceptBtn = needsReview ? '<button type="button" class="primary" data-hitl="accept">Accept</button>' : '';
-  const escalateBtn = needsReview ? '<button type="button" class="ghost danger-btn" data-hitl="escalate">Escalate</button>' : '';
+
+  if (agent.status === "GATHERING_INFORMATION") {
+    return `
+      <div class="section agent-hitl pending-info">
+        <h3>Requested Information Pending</h3>
+        <p class="muted">The clinician requested more information before finalizing triage.</p>
+        <div class="field">
+          <label for="update-note">Provide information</label>
+          <textarea id="update-note" rows="3" placeholder="e.g. ECG normal, BP rechecked at 120/80..."></textarea>
+        </div>
+        <button type="button" class="primary" id="btn-update-patient">Submit Information</button>
+        <p class="form-msg" id="update-msg"></p>
+      </div>`;
+  }
+
+  const isCompleted = agent.status === "COMPLETED";
+  const buttons = isCompleted
+    ? `
+        <button type="button" class="ghost" data-hitl="modify">Modify</button>
+        <button type="button" class="ghost danger-btn" data-hitl="escalate">Escalate</button>
+      `
+    : `
+        <button type="button" class="primary" data-hitl="accept">Accept</button>
+        <button type="button" class="ghost" data-hitl="modify">Modify</button>
+        <button type="button" class="ghost" data-hitl="request_more_information">Request more information</button>
+        <button type="button" class="ghost danger-btn" data-hitl="escalate">Escalate</button>
+      `;
 
   return `
     <div class="section agent-hitl">
-      <h3>Human-in-the-loop</h3>
-      <p class="muted">Clinician has final authority. Modify and override require a reason.</p>
+      <h3>Clinician decision</h3>
+      <p class="muted">Final authority stays with the clinician. Modify needs a reason.</p>
       <div class="hitl-actions" id="hitl-actions">
-        ${acceptBtn}
-        <button type="button" class="ghost" data-hitl="modify">Modify</button>
-        <button type="button" class="ghost" data-hitl="override">Override</button>
-        ${escalateBtn}
+        ${buttons}
       </div>
       <div class="hitl-form" id="hitl-form">
         <div class="field-row">
           <div class="field">
-            <label for="hitl-priority">Priority (modify / override)</label>
+            <label for="hitl-priority">Priority (modify)</label>
             <select id="hitl-priority">${options}</select>
           </div>
           <div class="field">
             <label for="hitl-actor">Clinician</label>
-            <input type="text" id="hitl-actor" value="A. Nurse" />
+            <input type="text" id="hitl-actor" placeholder="Your Name" />
           </div>
         </div>
         <div class="field">
           <label for="hitl-reason">Reason</label>
-          <textarea id="hitl-reason" placeholder="Required for modify and override"></textarea>
+          <textarea id="hitl-reason" placeholder="Required for modify"></textarea>
         </div>
         <p class="form-msg" id="hitl-msg"></p>
       </div>
@@ -208,24 +272,13 @@ function renderAgentPanel(agent, row) {
     : `<p class="muted">No key evidence listed yet.</p>`;
   const gaps = (agent.information_gaps || []).length
     ? `<ul class="gap-list">${agent.information_gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>`
-    : `<p class="muted">No material gaps flagged.</p>`;
-  const agree = agent.agreement == null
-    ? "n/a"
-    : agent.agreement ? "YES" : "NO";
-  const disagree = agent.disagreement_reason
-    ? `<p class="disagree">${esc(agent.disagreement_reason)}</p>`
     : "";
-  const timeline = (agent.timeline || []).map((t) =>
-    `<li><span class="t">${esc(t.kind)}</span><span>${esc(t.label)}</span></li>`
-  ).join("");
 
   return `
     <div class="section agent-panel">
-      <h3>Agent assessment</h3>
+      <h3>Recommendation</h3>
       <div class="agent-status">
         <span class="status-pill">${esc(agent.status_label)}</span>
-        <span class="tag">${esc(agent.decision_source.replace(/_/g, " "))}</span>
-        ${agent.baseline_used ? '<span class="tag">baseline consulted</span>' : ""}
       </div>
 
       <div class="agent-grid">
@@ -243,25 +296,12 @@ function renderAgentPanel(agent, row) {
         </div>
       </div>
       <p><strong>Care pathway:</strong> ${esc(agent.care_pathway || "—")}</p>
-      <p><strong>Monitoring plan:</strong> ${esc(agent.monitoring_plan || "—")}</p>
+      <p><strong>Monitoring:</strong> ${esc(agent.monitoring_plan || "—")}</p>
       ${agent.reason_summary ? `<p class="whatif">${esc(agent.reason_summary)}</p>` : ""}
 
       <h4>Key evidence</h4>
       ${evidence}
-
-      <h4>Information gaps</h4>
-      ${gaps}
-
-      <h4>Baseline comparison</h4>
-      <div class="baseline-box">
-        <div>Agent recommendation: <strong>P${agent.agent_priority ?? "—"}</strong></div>
-        <div>Deterministic baseline: <strong>P${agent.baseline_priority ?? "—"}</strong></div>
-        <div>Agreement: <strong class="${agent.agreement === false ? "bad" : ""}">${agree}</strong></div>
-        ${disagree}
-      </div>
-
-      <h4>Agent timeline</h4>
-      <ul class="events timeline">${timeline || '<li class="muted">No operational events yet.</li>'}</ul>
+      ${gaps ? `<h4>Information gaps</h4>${gaps}` : ""}
     </div>`;
 }
 
@@ -282,22 +322,19 @@ function renderDetail(detail) {
   const { interpreter: interp, adjudicator: adj, patient } = result;
 
   const overrideNote = row.overridden
-    ? `<div class="engine-said">Agent/baseline on file. Clinician set P${row.acuity} (${esc(row.override_direction || "set")}).</div>`
+    ? `<div class="engine-said">Clinician set P${row.acuity} (${esc(row.override_direction || "set")}).</div>`
     : "";
 
-  const confNote = row.decision_source === "agent"
-    ? "Agent recommendation awaiting or completed clinician review."
-    : "Deterministic fallback recommendation (Gemini unavailable or incomplete).";
-
   $("#detail").innerHTML = `
+    <div class="detail-scroll">
     <div class="detail-head">
       ${esiChip(row.acuity, true)}
       <div class="dh-main">
         <h2>${esc(row.display_name || "Walk-in")}</h2>
-        <div class="sub">${esc(row.patient_id)} &middot; ${row.age_years}y ${esc(row.age_band)} &middot; arrived t+${row.arrival_epoch_min}m</div>
+        <div class="sub">${esc(row.patient_id)} &middot; ${esc(sexLabel(row.sex))} &middot; ${row.age_years}y ${esc(row.age_band)} &middot; arrived t+${row.arrival_epoch_min}m</div>
         ${overrideNote}
-        <div class="placement">${esc((agent && agent.care_pathway) || adj.placement)} &middot; ${esc(row.decision_source.replace(/_/g, " "))}</div>
-        <div class="dh-conf">${confMeter(row.confidence, row.confidence_band)}<span class="dh-conf-note">${esc(confNote)}</span></div>
+        <div class="placement">${esc((agent && agent.care_pathway) || adj.placement)}</div>
+        <div class="dh-conf">${confMeter(row.confidence, row.confidence_band)}</div>
       </div>
     </div>
 
@@ -306,38 +343,192 @@ function renderDetail(detail) {
       <p>${esc(patient.chief_complaint)}</p>
     </div>
 
+    ${renderHistory(patient)}
+
     ${renderAgentPanel(agent, row)}
     ${renderHitl(agent, row)}
 
     <div class="section">
       <h3>Plain-language read</h3>
-      <div id="explain-slot"><p class="muted">Generating explanation...</p></div>
+      <div id="explain-slot"><p class="muted">Loading...</p></div>
     </div>
 
     ${renderClocks(adj.time_critical_clocks)}
     ${renderVitals(interp.vital_flags)}
     ${renderAuditFor(audit)}
+    </div>
   `;
 
   $$("#hitl-actions button").forEach((btn) => {
     btn.addEventListener("click", () => submitHitl(row.patient_id, btn.dataset.hitl));
   });
+
+  const btnUpdate = $("#btn-update-patient");
+  if (btnUpdate) {
+    btnUpdate.addEventListener("click", () => submitPatientUpdate(row.patient_id));
+  }
+}
+
+async function submitPatientUpdate(pid) {
+  const note = ($("#update-note") && $("#update-note").value.trim()) || "";
+  const msg = $("#update-msg");
+  if (note.length < 3) {
+    if (msg) {
+      msg.className = "form-msg err";
+      msg.textContent = "Please provide some information to submit.";
+    }
+    return;
+  }
+  
+  const btn = $("#btn-update-patient");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Analysing with Gemini...";
+  }
+
+  try {
+    const body = await api(`/api/patients/${encodeURIComponent(pid)}/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note, confirm: false }),
+    });
+    renderUpdatePreview(pid, note, body);
+  } catch (err) {
+    if (msg) {
+      msg.className = "form-msg err";
+      msg.textContent = `Could not get prediction: ${err.message}`;
+    }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Submit Information";
+    }
+  }
+}
+
+function renderUpdatePreview(pid, note, body) {
+  const adj = body.result.adjudicator;
+  const shown = body.live_priority != null ? body.live_priority : adj.acuity;
+  const fields = body.parsed.fields_found.length
+    ? body.parsed.fields_found.map((f) => `<span class="tag">${esc(f.replace(/_/g, " "))}</span>`).join(" ")
+    : '<span class="muted">nothing structured could be extracted</span>';
+  const gaps = (body.information_gaps || []).length
+    ? `<p class="io-drivers"><strong>Still needed:</strong> ${body.information_gaps.map(esc).join("; ")}</p>`
+    : "";
+
+  const whyBits = (adj.top_drivers || [])
+    .filter((d) => d && !/expected resource/i.test(d) && !/^decision\s+[a-d]/i.test(d))
+    .slice(0, 3);
+  const whyLine = whyBits.length
+    ? `<p class="io-drivers"><strong>Why this level:</strong> ${whyBits.map(esc).join("; ")}</p>`
+    : "";
+
+  const parseSource = body.parsed.source || "rule-based";
+  const explainSource = body.explanation.source || "template";
+  const isGemini = parseSource === "gemini" || explainSource === "gemini" || explainSource === "agent";
+  const sourceBadge = isGemini
+    ? '<span class="tag source-gemini">Gemini</span>'
+    : '<span class="tag source-engine">Deterministic engine</span>';
+
+  const host = $("#detail .pending-info");
+  if (!host) return;
+
+  host.innerHTML = `
+    <h3>New Assessment Preview</h3>
+    <div class="update-preview">
+      <div class="io-head">
+        ${esiChip(shown, true)}
+        <div class="io-meta">
+          <h3>ESI ${shown} &middot; ${esc(adj.placement)}</h3>
+          <div class="sub">Reassessment with new information &middot; ${sourceBadge}</div>
+        </div>
+      </div>
+      <div class="io-explain">${esc(body.explanation.text)}</div>
+      <div class="io-fields">${fields}</div>
+      ${whyLine}
+      ${gaps}
+    </div>
+    <p class="muted" style="margin-top:12px;">Is this assessment correct?</p>
+    <div class="update-confirm-actions">
+      <button type="button" class="primary" id="btn-confirm-update">Yes, confirm and apply</button>
+      <button type="button" class="ghost" id="btn-reject-update">No, add more info</button>
+    </div>
+    <p class="form-msg" id="update-msg"></p>
+  `;
+
+  $("#btn-confirm-update").addEventListener("click", () => confirmUpdate(pid, note));
+  $("#btn-reject-update").addEventListener("click", () => rejectUpdate(pid));
+}
+
+async function confirmUpdate(pid, note) {
+  const btn = $("#btn-confirm-update");
+  const msg = $("#update-msg");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Applying...";
+  }
+
+  try {
+    const body = await api(`/api/patients/${encodeURIComponent(pid)}/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note, confirm: true }),
+    });
+    await loadBoard();
+    if (body.detail) {
+      renderDetail(body.detail);
+    } else {
+      selectPatient(pid);
+    }
+    loadAudit();
+    loadExplanation(pid);
+  } catch (err) {
+    if (msg) {
+      msg.className = "form-msg err";
+      msg.textContent = `Could not apply update: ${err.message}`;
+    }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Yes, confirm and apply";
+    }
+  }
+}
+
+function rejectUpdate(pid) {
+  const host = $("#detail .pending-info");
+  if (!host) return;
+  host.innerHTML = `
+    <h3>Requested Information Pending</h3>
+    <p class="muted">The clinician requested more information before finalizing triage.</p>
+    <div class="field">
+      <label for="update-note">Provide information</label>
+      <textarea id="update-note" rows="3" placeholder="e.g. ECG normal, BP rechecked at 120/80..."></textarea>
+    </div>
+    <button type="button" class="primary" id="btn-update-patient">Submit Information</button>
+    <p class="form-msg" id="update-msg"></p>
+  `;
+  $("#btn-update-patient").addEventListener("click", () => submitPatientUpdate(pid));
 }
 
 async function submitHitl(pid, action) {
   const msg = $("#hitl-msg");
   const reason = ($("#hitl-reason") && $("#hitl-reason").value.trim()) || "";
   const priority = $("#hitl-priority") ? Number($("#hitl-priority").value) : null;
-  const actor = ($("#hitl-actor") && $("#hitl-actor").value.trim()) || "A. Nurse";
+  const actor = ($("#hitl-actor") && $("#hitl-actor").value.trim());
+
+  if (!actor) {
+    msg.className = "form-msg err";
+    msg.textContent = "Your name is required.";
+    return;
+  }
 
   if ((action === "modify" || action === "override") && reason.length < 3) {
     msg.className = "form-msg err";
-    msg.textContent = "A reason is required for modify and override.";
+    msg.textContent = "A reason is required for modify.";
     return;
   }
   if ((action === "modify" || action === "override") && !priority) {
     msg.className = "form-msg err";
-    msg.textContent = "Choose a priority for modify/override.";
+    msg.textContent = "Choose a priority for modify.";
     return;
   }
   if ((action === "escalate" || action === "request_more_information") && reason.length < 3) {
@@ -351,9 +542,9 @@ async function submitHitl(pid, action) {
     action,
     actor,
     actor_role: "triage nurse",
-    reason: reason || (action === "accept" ? "Accepted agent recommendation." : reason),
+    reason: reason || (action === "accept" ? "Accepted clinical assessment." : reason),
     active_priority: (action === "modify" || action === "override" || action === "accept")
-      ? (action === "accept" ? null : priority)
+      ? priority
       : null,
   };
 
@@ -393,15 +584,8 @@ async function loadExplanation(pid) {
     if (state.selected !== pid) return;
     const host = $("#explain-slot");
     if (host) {
-      const src =
-        ex.source === "gemini"
-          ? "Gemini, level verified"
-          : ex.source === "ollama"
-            ? "Ollama, level verified"
-            : "template";
-      host.innerHTML = `<div class="explain-box">${esc(ex.text)}<span class="src">${esc(src)}</span></div>`;
+      host.innerHTML = `<div class="explain-box">${esc(ex.text)}</div>`;
     }
-    loadTelemetry();
   } catch (_) { /* explanation is optional */ }
 }
 
@@ -467,21 +651,168 @@ async function loadAudit() {
 
 /* ---------- free-text intake ---------- */
 
-async function runIntake() {
+const INTAKE_CHIP_META = {
+  history: { input: "#intake-history-input", list: "#intake-history-chips" },
+  medications: { input: "#intake-meds-input", list: "#intake-meds-chips" },
+  allergies: { input: "#intake-allergies-input", list: "#intake-allergies-chips" },
+};
+
+function renderIntakeChips(kind) {
+  const meta = INTAKE_CHIP_META[kind];
+  if (!meta) return;
+  const host = $(meta.list);
+  const items = state.intakeChips[kind] || [];
+  host.innerHTML = items.map((item, idx) => `
+    <span class="intake-chip">
+      ${esc(item)}
+      <button type="button" data-chip-kind="${esc(kind)}" data-chip-idx="${idx}" aria-label="Remove ${esc(item)}">&times;</button>
+    </span>`).join("");
+  host.querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const k = btn.dataset.chipKind;
+      const i = Number(btn.dataset.chipIdx);
+      state.intakeChips[k].splice(i, 1);
+      renderIntakeChips(k);
+      syncPriorFromChips();
+    });
+  });
+}
+
+function addIntakeChip(kind) {
+  const meta = INTAKE_CHIP_META[kind];
+  if (!meta) return;
+  const input = $(meta.input);
+  const value = (input.value || "").trim();
+  if (!value) return;
+  const list = state.intakeChips[kind];
+  if (!list.some((x) => x.toLowerCase() === value.toLowerCase())) {
+    list.push(value);
+    renderIntakeChips(kind);
+  }
+  input.value = "";
+  input.focus();
+  syncPriorFromChips();
+}
+
+function syncPriorFromChips() {
+  const prior = $("#intake-prior");
+  if (!prior) return;
+  const any = Object.values(state.intakeChips).some((arr) => arr.length);
+  if (any) prior.checked = true;
+}
+
+function composeIntakeText() {
   const name = ($("#intake-name").value || "").trim();
+  const age = ($("#intake-age").value || "").trim();
+  const sex = ($("#intake-sex").value || "").trim();
   const vitals = ($("#intake-vitals").value || "").trim();
   const note = ($("#intake-text").value || "").trim();
-  
+  const prior = $("#intake-prior") && $("#intake-prior").checked;
+  const history = state.intakeChips.history;
+  const meds = state.intakeChips.medications;
+  const allergies = state.intakeChips.allergies;
   const parts = [];
   if (name) parts.push(`Patient Name: ${name}`);
+  if (age) parts.push(`Age: ${age}`);
+  if (sex) parts.push(`Sex: ${sex}`);
   if (vitals) parts.push(`Vitals: ${vitals}`);
   if (note) parts.push(`Note: ${note}`);
-  const text = parts.join(", ");
-  
+  if (prior || history.length || meds.length || allergies.length) {
+    parts.push(`Prior record: ${prior || history.length || meds.length || allergies.length ? "yes" : "no"}`);
+  }
+  if (history.length) parts.push(`History: ${history.join(", ")}`);
+  if (meds.length) parts.push(`Medications: ${meds.join(", ")}`);
+  if (allergies.length) parts.push(`Allergies: ${allergies.join(", ")}`);
+  return parts.join("\n");
+}
+
+function clearIntakeForm() {
+  $("#intake-name").value = "";
+  $("#intake-age").value = "";
+  $("#intake-sex").value = "";
+  $("#intake-vitals").value = "";
+  $("#intake-text").value = "";
+  if ($("#intake-prior")) $("#intake-prior").checked = false;
+  state.intakeChips = { history: [], medications: [], allergies: [] };
+  Object.keys(INTAKE_CHIP_META).forEach(renderIntakeChips);
+  ["#intake-history-input", "#intake-meds-input", "#intake-allergies-input"].forEach((sel) => {
+    if ($(sel)) $(sel).value = "";
+  });
+  state.lastIntakeText = null;
+  state.lastIntakePreviewId = null;
+}
+
+function renderIntake(body) {
+  const {
+    parsed,
+    result,
+    explanation,
+    added_patient_id,
+    needs_more_information,
+    information_gaps,
+    live_priority,
+  } = body;
+  const adj = result.adjudicator;
+  const fields = parsed.fields_found.length
+    ? parsed.fields_found.map((f) => `<span class="tag">${esc(f.replace(/_/g, " "))}</span>`).join(" ")
+    : '<span class="muted">nothing structured could be extracted</span>';
+  const note = parsed.note ? `<p class="io-note">${esc(parsed.note)}</p>` : "";
+  const gaps = (information_gaps || []).length
+    ? `<p class="io-drivers"><strong>Still needed:</strong> ${information_gaps.map(esc).join("; ")}</p>`
+    : "";
+
+  const addBtn = added_patient_id
+    ? `<span class="tag override">added as ${esc(added_patient_id)}</span>`
+    : `<button type="button" class="primary" id="intake-add-board">Add to live board</button>`;
+
+  if (needs_more_information) {
+    const ref = live_priority != null ? live_priority : adj.acuity;
+    $("#intake-output").innerHTML = `
+      <div class="io-head">
+        <div class="esi esi-unknown" title="Not a firm triage decision">?</div>
+        <div class="io-meta">
+          <h3>Need more information</h3>
+          <div class="sub">Assessment complete</div>
+        </div>
+      </div>
+      <div class="io-explain">${esc(explanation.text)}</div>
+      <div class="io-fields">${fields}</div>
+      ${note}
+      ${gaps}
+      <p class="io-drivers muted">Reference only: ESI ${ref} · ${esc(adj.placement)}</p>
+      <div class="intake-followup">${addBtn}</div>`;
+  } else {
+    const shown = live_priority != null ? live_priority : adj.acuity;
+    const whyBits = (adj.top_drivers || [])
+      .filter((d) => d && !/expected resource/i.test(d) && !/^decision\s+[a-d]/i.test(d))
+      .slice(0, 3);
+    const whyLine = whyBits.length
+      ? `<p class="io-drivers"><strong>Why this level:</strong> ${whyBits.map(esc).join("; ")}</p>`
+      : "";
+    $("#intake-output").innerHTML = `
+      <div class="io-head">
+        ${esiChip(shown, true)}
+        <div class="io-meta">
+          <h3>ESI ${shown} &middot; ${esc(adj.placement)}</h3>
+          <div class="sub">Assessment complete</div>
+        </div>
+      </div>
+      <div class="io-explain">${esc(explanation.text)}</div>
+      <div class="io-fields">${fields}</div>
+      ${note}
+      ${whyLine}
+      <div class="intake-followup">${addBtn}</div>`;
+  }
+
+  const follow = $("#intake-add-board");
+  if (follow) follow.addEventListener("click", addIntakeToBoard);
+}
+
+async function runIntake() {
+  const text = composeIntakeText();
   const btn = $("#intake-run");
   if (text.length < 2) {
-    btn.textContent = 'Type a note first.';
-    setTimeout(() => btn.textContent = "Parse, Score & Add to Board", 2000);
+    $("#intake-output").innerHTML = '<p class="form-msg err">Enter a name, age, vitals, or note first.</p>';
     return;
   }
   btn.disabled = true;
@@ -490,96 +821,62 @@ async function runIntake() {
     const body = await api("/api/intake", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, add_to_board: true }),
+      body: JSON.stringify({ text, add_to_board: false }),
     });
-    
-    if (body.added_patient_id) {
-      $("#intake-name").value = "";
-      $("#intake-vitals").value = "";
-      $("#intake-text").value = "";
-      await loadBoard();
-      selectPatient(body.added_patient_id);
-    }
-    loadTelemetry();
+    state.lastIntakeText = text;
+    state.lastIntakePreviewId = body.preview_patient_id;
+    renderIntake(body);
   } catch (err) {
-    btn.textContent = `Failed: ${esc(err.message)}`;
-    setTimeout(() => {
-        btn.disabled = false;
-        btn.textContent = "Parse, Score & Add to Board";
-    }, 3000);
+    state.lastIntakeText = null;
+    state.lastIntakePreviewId = null;
+    $("#intake-output").innerHTML = `<p class="form-msg err">Intake failed: ${esc(err.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Parse and score";
+  }
+}
+
+async function addIntakeToBoard() {
+  const text = composeIntakeText();
+  const btn = $("#intake-add-board");
+  if (!text || text.length < 2) {
+    $("#intake-output").innerHTML = '<p class="form-msg err">Assess the patient first, then add to the board.</p>';
     return;
   }
-  btn.disabled = false;
-  btn.textContent = "Parse, Score & Add to Board";
-}
-
-/* ---------- llm status + telemetry ---------- */
-
-function applyLlmStatus(status) {
-  state.llm = status;
-  const badge = $("#ai-badge");
-  const chip = $("#intake-mode");
-  // The model name already starts with "gemini-", so don't prefix it again.
-  const label = status.live ? (status.model || "Gemini") : "rule-based";
-  badge.textContent = status.live ? "AI: Gemini" : "AI: rule-based";
-  badge.classList.toggle("live", status.live);
-  badge.title = status.live
-    ? `Live: ${status.model}`
-    : status.key_present ? "Key present but package missing" : "No key set, running the deterministic fallback";
-  if (chip) {
-    chip.textContent = label;
-    chip.classList.toggle("live", status.live);
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Adding...";
   }
-}
-
-async function loadLlmStatus() {
-  try { applyLlmStatus(await api("/api/llm/status")); } catch (_) { /* badge stays default */ }
-}
-
-function renderTelemetry(t) {
-  const s = t.status;
-  const cards = [
-    { label: "Calls", value: t.total_calls },
-    { label: "Cache hits", value: t.cache_hits },
-    { label: "Fallbacks", value: t.fallbacks, cls: t.fallbacks ? "warn" : "" },
-    { label: "Errors", value: t.errors, cls: t.errors ? "danger" : "" },
-    { label: "Avg latency", value: `${t.avg_latency_ms}ms` },
-    { label: "Est. cost", value: `$${t.est_cost_usd.toFixed(4)}`, cls: "brand" },
-  ];
-  const rows = t.recent.length
-    ? t.recent.map((c) => `
-        <tr>
-          <td class="mono">${esc(c.timestamp_utc.slice(11, 19))}</td>
-          <td>${esc(c.task)}</td>
-          <td>${esc(c.provider)}${c.cached ? " (cached)" : ""}</td>
-          <td class="mono">${c.input_tokens}/${c.output_tokens}</td>
-          <td class="mono">${c.latency_ms}ms</td>
-          <td class="${!c.ok ? "bad" : c.fell_back ? "fell" : "ok"}">${!c.ok ? "error" : c.fell_back ? "fell back" : "ok"}</td>
-        </tr>`).join("")
-    : '<tr><td colspan="6" class="muted">No calls yet. Run a free-text intake or open a patient.</td></tr>';
-
-  const mode = s.live
-    ? `<span class="live">live on ${esc(s.model)}</span>`
-    : `rule-based (${s.key_present ? "key present, package missing" : "no key set"})`;
-
-  $("#telemetry-output").innerHTML = `
-    <p class="tele-status">Mode: <b>${mode}</b> &middot; configured <b>${esc(s.configured_mode)}</b></p>
-    <div class="tele-grid">${cards.map((c) => `
-      <div class="kpi">
-        <div class="label">${esc(c.label)}</div>
-        <div class="value ${c.cls || ""}">${c.value}</div>
-      </div>`).join("")}</div>
-    <div class="section-label">Recent calls</div>
-    <div class="table-wrap">
-      <table class="tele-table">
-        <thead><tr><th>Time</th><th>Task</th><th>Provider</th><th>Tokens in/out</th><th>Latency</th><th>Result</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
-}
-
-async function loadTelemetry() {
-  try { renderTelemetry(await api("/api/telemetry")); } catch (_) { /* optional */ }
+  try {
+    const payload = { text, add_to_board: true };
+    if (state.lastIntakePreviewId) {
+      payload.preview_patient_id = state.lastIntakePreviewId;
+    }
+    const body = await api("/api/intake", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    renderIntake(body);
+    if (body.added_patient_id) {
+      clearIntakeForm();
+      await loadBoard();
+      selectPatient(body.added_patient_id);
+      loadAudit();
+    }
+  } catch (err) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Add to live board";
+    }
+    const host = $("#intake-output");
+    if (host) {
+      host.insertAdjacentHTML(
+        "beforeend",
+        `<p class="form-msg err">Could not add: ${esc(err.message)}</p>`
+      );
+    }
+  }
 }
 
 /* ---------- watcher simulation ---------- */
@@ -675,15 +972,13 @@ async function setSurge(factor, button) {
 }
 
 function selectTab(name) {
-  ["audit", "sim", "telemetry"].forEach((t) =>
+  ["audit", "sim"].forEach((t) =>
     $(`#tab-${t}`).classList.toggle("is-hidden", t !== name));
-  if (name === "telemetry") loadTelemetry();
 }
 
 function init() {
   $$(".switch button").forEach((b) =>
     b.addEventListener("click", () => setSurge(Number(b.dataset.surge), b)));
-  $("#refresh").addEventListener("click", loadBoard);
   $$(".sim-actions button").forEach((b) =>
     b.addEventListener("click", () => runSim(Number(b.dataset.sim), b)));
   $$(".tabs button").forEach((b) => b.addEventListener("click", () => {
@@ -694,14 +989,25 @@ function init() {
     selectTab(b.dataset.tab);
   }));
 
-  // Free-text intake panel.
   $("#intake-run").addEventListener("click", runIntake);
-  $("#intake-examples").innerHTML = EXAMPLES.map((ex, i) =>
-    `<button type="button" data-ex="${i}">${esc(ex.slice(0, 34))}...</button>`).join("");
-  $$("#intake-examples button").forEach((b) =>
-    b.addEventListener("click", () => { $("#intake-text").value = EXAMPLES[Number(b.dataset.ex)]; }));
 
-  loadLlmStatus();
+  Object.keys(INTAKE_CHIP_META).forEach((kind) => {
+    renderIntakeChips(kind);
+    const meta = INTAKE_CHIP_META[kind];
+    const input = $(meta.input);
+    if (input) {
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          addIntakeChip(kind);
+        }
+      });
+    }
+  });
+  $$("[data-chip-add]").forEach((btn) => {
+    btn.addEventListener("click", () => addIntakeChip(btn.dataset.chipAdd));
+  });
+
   loadBoard();
   loadAudit();
 }

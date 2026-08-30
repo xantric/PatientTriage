@@ -48,6 +48,8 @@ def recommendation_from_fallback(result: TriageResult) -> AgentRecommendation:
     not a silent primary path; it is explicit degradation.
     """
 
+    from app.llm.stub import template_explanation
+
     adj = result.adjudicator
     band = ConfidenceBand(adj.confidence_band.value)
     return AgentRecommendation(
@@ -57,10 +59,7 @@ def recommendation_from_fallback(result: TriageResult) -> AgentRecommendation:
         monitoring_plan=adj.monitoring_tier.value,
         confidence=adj.confidence,
         confidence_band=band,
-        reason_summary=(
-            "Deterministic fallback recommendation: "
-            + "; ".join(adj.top_drivers[:3] or adj.rationale[:2] or ["engine score"])
-        )[:500],
+        reason_summary=template_explanation(result)[:500],
         key_evidence=list(adj.top_drivers[:5]),
         information_gaps=list(result.interpreter.data_gaps[:5]),
         human_review_required=True,

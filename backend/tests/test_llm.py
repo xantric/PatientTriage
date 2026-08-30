@@ -48,6 +48,27 @@ def test_rule_parser_extracts_vitals_and_context():
     assert any("diabet" in h.lower() for h in x.history)
 
 
+def test_labeled_intake_form_keeps_name_and_complaint_separate():
+    note = (
+        "Patient Name: Ishan Kamboj\n"
+        "Age: 21\n"
+        "Sex: M\n"
+        "Vitals: HR 98\n"
+        "Note: Skin itching, redness"
+    )
+    x = rule_parse(note)
+    assert x.patient_name == "Ishan Kamboj"
+    assert x.age_years == 21
+    assert x.sex == "M"
+    assert x.heart_rate == 98
+    assert "itch" in (x.chief_complaint or "").lower()
+    assert "Patient Name" not in (x.chief_complaint or "")
+    parsed, _ = LLM.parse_intake(note, "TEST-LABEL")
+    assert parsed.patient.display_name == "Ishan Kamboj"
+    assert parsed.patient.sex.value == "M"
+    assert "itch" in parsed.patient.chief_complaint.lower()
+
+
 def test_fahrenheit_is_converted_to_celsius():
     x = rule_parse("child with fever, temp 101.3")
     assert x.temp_c is not None and 38.0 <= x.temp_c <= 39.0

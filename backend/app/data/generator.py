@@ -310,6 +310,27 @@ def _random_fillers(n: int, start_epoch: int, spacing: float = 3.0) -> list[Pati
         first_names = ["John", "Mary", "Michael", "Sarah", "William", "Jessica", "David", "Emily", "Richard", "Ashley"]
         last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"]
         fake_name = f"{rng.choice(first_names)} {rng.choice(last_names)}"
+        history: list[str] = []
+        medications: list[str] = []
+        allergies: list[str] = []
+        if has_record:
+            history = rng.sample(
+                [
+                    "hypertension",
+                    "type 2 diabetes",
+                    "asthma",
+                    "coronary artery disease",
+                    "hypothyroidism",
+                    "previous appendectomy",
+                ],
+                k=rng.randint(1, 2),
+            )
+            medications = rng.sample(
+                ["metformin", "amlodipine", "atorvastatin", "aspirin", "levothyroxine", "salbutamol"],
+                k=rng.randint(1, 2),
+            )
+            if rng.random() < 0.35:
+                allergies = [rng.choice(["penicillin", "sulfa", "latex", "peanuts"])]
         out.append(
             Patient(
                 patient_id=pid,
@@ -322,6 +343,9 @@ def _random_fillers(n: int, start_epoch: int, spacing: float = 3.0) -> list[Pati
                 responsiveness=Responsiveness.alert,
                 vitals=vit,
                 onset_minutes=rng.choice([None, 120, 240, 480]),
+                history=history,
+                medications=medications,
+                allergies=allergies,
                 has_prior_record=has_record,
                 arrival_epoch_min=start_epoch + int(round(i * spacing)),
                 expected_acuity=5 if low else 3,
