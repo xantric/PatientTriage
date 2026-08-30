@@ -4,10 +4,6 @@ Team Sentinel. Accenture Innovation Challenge 2026. Track 2, Round 2.
 
 Sentinel is an agent-first, human-in-the-loop triage helper for the emergency department. It recommends urgency and placement. It does not diagnose, treat, or replace the clinician.
 
-## Live demo
-
-Follow the steps below to run it on your own machine. Free Render may take 30 to 90 seconds on the first open after idle. The live path uses Gemini when configured; otherwise the deterministic engine is the fallback.
-
 <!-- ## Demo video -->
 
 <!-- Demo video: add the public link here before submission. -->
@@ -15,7 +11,7 @@ Follow the steps below to run it on your own machine. Free Render may take 30 to
 ## Implementation approach
 
 1. Bias toward safety when unsure. Missing a critical patient is worse than over-calling a minor one. Low confidence goes to a nurse. Thin notes can ask for more information instead of forcing a firm score.
-2. Hybrid model. A Gemini agent is the main reasoner. It uses tools, proposes ESI 1 to 5, and can request info or escalate. A deterministic engine stays as baseline, fallback, and evaluation so the app still runs with no API key.
+2. Hybrid model, Gemini first. A Gemini agent is the main reasoner. It uses tools, proposes ESI 1 to 5, and can request info or escalate. That agentic path is preferred over the deterministic engine alone. The deterministic engine stays as baseline, fallback, and evaluation so the app still runs with no API key. For a full live board with Gemini on every patient, set `SENTINEL_LIVE_AGENT_BOARD=1` locally (slow; uses many API calls). Without that flag, the board uses the deterministic path and Gemini still powers intake when a key is set.
 3. Clinician always decides. Accept, modify, override, request more information, or escalate. Modify and override need a reason. Both agent and clinician choices are kept for audit.
 4. Keep watching the waiting room. The Watcher re-checks on unsafe waits or worsening vitals, and only escalates. Demo covers normal load and 3x surge.
 5. Simulated data only. About 25 fixed-seed patients, including ambiguous, pediatric, geriatric, zero-history, and one deterioration case (P-011). Real patient data can be added via the dashboard.
@@ -55,7 +51,7 @@ README.md
 docs/
   business-proposal.md
   final-architecture.md
-  Sentinel_Pitch.pptx
+  Sentinel_Detailed_Business_Proposal.pptx
 backend/
   app/                 # API, agent, engine, LLM, UI
   tests/
@@ -87,11 +83,11 @@ Required:
 - Packages in [backend/requirements.txt](backend/requirements.txt): FastAPI, Uvicorn, Pydantic, httpx, python-dateutil, pytest
 - Optional LLM packages in the same file: `google-genai`, `python-dotenv`
 
-Optional(Highly Recommended):
+Optional:
 
 - Gemini API key from [Google AI Studio](https://aistudio.google.com)
 
-Without a key, the prototype still runs using the rule-based parser and deterministic fallback.
+Without a key, the prototype still runs using the rule-based parser and deterministic fallback. That path works, but the Gemini agentic workflow is the preferred demo and is much stronger for tool use, uncertainty, and plain-language triage.
 
 Copy [backend/.env.example](backend/.env.example) to `backend/.env` for optional LLM settings. Do not commit `.env`.
 
@@ -115,13 +111,18 @@ python run_server.py
 Open http://127.0.0.1:8000  
 API docs: http://127.0.0.1:8000/docs
 
-Optional LLM setup:
+Optional LLM setup (preferred for intake and agent demos):
 
 ```powershell
 copy .env.example .env
 ```
 
-Edit `.env`, then restart `python run_server.py`.
+Edit `.env`:
+
+- `SENTINEL_LLM=gemini`
+- `GEMINI_API_KEY=` your key
+
+Leave `SENTINEL_LIVE_AGENT_BOARD` unset unless you want Gemini on every board patient (heavy on free API quotas). Then restart `python run_server.py`. Without a key, the prototype still runs on deterministic fallback only.
 
 Other commands:
 
@@ -146,9 +147,9 @@ Quick walkthrough:
 | Working prototype | `backend/` |
 | This README | `README.md` |
 | Business proposal | [docs/business-proposal.md](docs/business-proposal.md) |
-| Pitch deck | [docs/Sentinel_Pitch.pptx](docs/Sentinel_Pitch.pptx) |
+| Proposal deck | [docs/Sentinel_Detailed_Business_Proposal.pptx](docs/Sentinel_Detailed_Business_Proposal.pptx) |
 | Architecture notes | [docs/final-architecture.md](docs/final-architecture.md) |
-| Demo video | Link in the Demo video section above |
+| Demo video | Link in the Demo video section |
 
 ## Disclaimer
 
