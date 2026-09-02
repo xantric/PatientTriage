@@ -31,6 +31,10 @@ function esc(value) {
   ));
 }
 
+function formatExplain(text) {
+  return esc(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
 function sexLabel(sex) {
   const v = String(sex || "").toUpperCase();
   if (v === "M") return "M";
@@ -110,7 +114,7 @@ function renderDecisionBanner(agent, row, adj, audit) {
     <div class="decision-block">
       <div class="decision-meta-line">${metaLine}</div>
       <p class="decision-pathway">${esc(pathway)}</p>
-      ${summary && summary !== pathway ? `<p class="decision-summary">${esc(summary)}</p>` : ""}
+      ${summary && summary !== pathway ? `<p class="decision-summary">${formatExplain(summary)}</p>` : ""}
     </div>`;
 }
 
@@ -240,11 +244,15 @@ function renderBoard(board) {
 
   $("#board-body").innerHTML = board.rows.map((r) => {
     const flags = [];
-    if (r.escalated_for_uncertainty) flags.push('<span class="tag up">escalated</span>');
+    const reviewed = ["accept", "modify", "override"].includes(resolveClinicianAction(r) || "");
+    if (r.escalated_for_uncertainty && !reviewed) {
+      flags.push('<span class="tag up">escalated</span>');
+    }
     if (r.red_flag_count) flags.push(`<span class="tag flag">${r.red_flag_count} red</span>`);
     const hitl = hitlFlag(r);
-    if (hitl) flags.push(hitl);
-    if (r.agent_status === "GATHERING_INFORMATION") {
+    if (hitl) {
+      flags.push(hitl);
+    } else if (r.agent_status === "GATHERING_INFORMATION") {
       flags.push('<span class="tag pending">needs info</span>');
     }
     flags.push(sourceTag(r.decision_source));
@@ -607,7 +615,7 @@ function renderUpdatePreview(pid, note, body) {
           <div class="sub">Reassessment with new information &middot; ${sourceBadge}</div>
         </div>
       </div>
-      <div class="io-explain">${esc(body.explanation.text)}</div>
+      <div class="io-explain">${formatExplain(body.explanation.text)}</div>
       <div class="io-fields">${fields}</div>
       ${whyLine}
       ${gaps}
@@ -757,7 +765,7 @@ async function loadExplanation(pid) {
     if (state.selected !== pid) return;
     const host = $("#explain-slot");
     if (host) {
-      host.innerHTML = `<div class="explain-box">${esc(ex.text)}</div>`;
+      host.innerHTML = `<div class="explain-box">${formatExplain(ex.text)}</div>`;
     }
   } catch (_) { /* explanation is optional */ }
 }
@@ -1017,14 +1025,13 @@ function renderIntake(body) {
           <div class="sub">Assessment complete &middot; ${sourceBadge}</div>
         </div>
       </div>
-      <div class="io-explain">${esc(explanation.text)}</div>
+      <div class="io-explain">${formatExplain(explanation.text)}</div>
       <div class="io-fields">${fields}</div>
       ${note}
       ${gaps}
       <p class="io-drivers muted">Reference only: ESI ${ref} · ${esc(adj.placement)}</p>
       <div class="intake-followup">${addBtn}</div>`;
   } else {
-    const renderMarkdown = (text) => esc(text).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     const shown = live_priority != null ? live_priority : adj.acuity;
     $("#intake-output").innerHTML = `
       <div class="io-head">
@@ -1034,7 +1041,7 @@ function renderIntake(body) {
           <div class="sub">Assessment complete &middot; ${sourceBadge}</div>
         </div>
       </div>
-      <div class="io-explain"><strong>Why this level:</strong> ${renderMarkdown(explanation.text)}</div>
+      <div class="io-explain"><strong>Why this level:</strong> ${formatExplain(explanation.text)}</div>
       ${note}
       <div class="intake-followup">${addBtn}</div>`;
   }

@@ -52,8 +52,8 @@ _EXPLAIN_SYSTEM = (
     "why this level fits using the complaint, age, vitals, and risk in plain "
     "language. Do not invent findings. Never use internal scoring jargon such as "
     "drivers, expected resources, Decision A, Decision B, Decision C, or "
-    "resource count. No em dashes or en dashes. Use markdown bolding (**word**) "
-    "to highlight important clinical findings and vitals."
+    "resource count. No em dashes or en dashes. Do not use markdown, asterisks, "
+    "or bold markers."
 )
 
 _REASSESS_SYSTEM = (
@@ -69,8 +69,8 @@ _REASSESS_SYSTEM = (
     "Return a JSON object with exactly two keys:\n"
     "- 'priority': an integer 1 through 5\n"
     "- 'explanation': a 1-2 sentence clinical justification for this ESI level, written "
-    "for a busy nurse, incorporating the latest update. Use markdown bolding (**word**) "
-    "to highlight important clinical findings and vitals."
+    "for a busy nurse, incorporating the latest update. Plain text only. Do not use "
+    "markdown, asterisks, or bold markers."
 )
 
 
@@ -355,6 +355,8 @@ def _scrub_explain_jargon(text: str) -> str:
     """Strip leftover internal scoring phrases from a model explanation."""
 
     cleaned = text.strip()
+    cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+    cleaned = cleaned.replace("**", "")
     cleaned = re.sub(
         r"\b\d+\s+expected resource\(s\)\b",
         "limited ED evaluation needs",
@@ -705,7 +707,9 @@ class LLMService:
                 
                 if 1 <= priority <= 5 and expl_text:
                     explanation = Explanation(
-                        text=expl_text, source="gemini", verified=True,
+                        text=_scrub_explain_jargon(expl_text),
+                        source="gemini",
+                        verified=True,
                         patient_id=patient_id,
                     )
                     return priority, explanation, calls
