@@ -168,7 +168,8 @@ def update_patient(patient_id: str, req: PatientUpdateRequest) -> PatientUpdateR
     combined_text = "\n".join(parts)
 
     # First parse the combined text the standard way to get structured data
-    parsed, result, old_explanation, calls, meta = LLM.triage_intake(combined_text, patient_id)
+    parsed, outcome, old_explanation, calls, meta = LLM.triage_intake(combined_text, patient_id)
+    result = outcome.baseline_result
 
     # Now use the pure-Gemini free-text reasoner to get the actual ESI
     new_priority, new_explanation, reassess_calls = LLM.reassess(combined_text, patient_id)
