@@ -913,7 +913,6 @@ function composeVitalsLine() {
   const hr = ($("#intake-vital-hr").value || "").trim();
   const bp = ($("#intake-vital-bp").value || "").trim();
   const spo2 = ($("#intake-vital-spo2").value || "").trim();
-  const rr = ($("#intake-vital-rr").value || "").trim();
   const temp = ($("#intake-vital-temp").value || "").trim();
   const other = ($("#intake-vital-other").value || "").trim();
   const parts = [];
@@ -923,7 +922,6 @@ function composeVitalsLine() {
     const pct = spo2.endsWith("%") ? spo2 : `${spo2}%`;
     parts.push(`SpO2 ${pct}`);
   }
-  if (rr) parts.push(`RR ${rr}`);
   if (temp) {
     const unit = state.intakeTempUnit === "F" ? "F" : "C";
     parts.push(`temp ${temp}°${unit}`);
@@ -1026,13 +1024,8 @@ function renderIntake(body) {
       <p class="io-drivers muted">Reference only: ESI ${ref} · ${esc(adj.placement)}</p>
       <div class="intake-followup">${addBtn}</div>`;
   } else {
+    const renderMarkdown = (text) => esc(text).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     const shown = live_priority != null ? live_priority : adj.acuity;
-    const whyBits = (adj.top_drivers || [])
-      .filter((d) => d && !/expected resource/i.test(d) && !/^decision\s+[a-d]/i.test(d))
-      .slice(0, 3);
-    const whyLine = whyBits.length
-      ? `<p class="io-drivers"><strong>Why this level:</strong> ${whyBits.map(esc).join("; ")}</p>`
-      : "";
     $("#intake-output").innerHTML = `
       <div class="io-head">
         ${esiChip(shown, true)}
@@ -1041,10 +1034,8 @@ function renderIntake(body) {
           <div class="sub">Assessment complete &middot; ${sourceBadge}</div>
         </div>
       </div>
-      <div class="io-explain">${esc(explanation.text)}</div>
-      <div class="io-fields">${fields}</div>
+      <div class="io-explain"><strong>Why this level:</strong> ${renderMarkdown(explanation.text)}</div>
       ${note}
-      ${whyLine}
       <div class="intake-followup">${addBtn}</div>`;
   }
 

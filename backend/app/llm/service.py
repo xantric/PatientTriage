@@ -52,7 +52,8 @@ _EXPLAIN_SYSTEM = (
     "why this level fits using the complaint, age, vitals, and risk in plain "
     "language. Do not invent findings. Never use internal scoring jargon such as "
     "drivers, expected resources, Decision A, Decision B, Decision C, or "
-    "resource count. No em dashes or en dashes."
+    "resource count. No em dashes or en dashes. Use markdown bolding (**word**) "
+    "to highlight important clinical findings and vitals."
 )
 
 _REASSESS_SYSTEM = (
@@ -68,7 +69,8 @@ _REASSESS_SYSTEM = (
     "Return a JSON object with exactly two keys:\n"
     "- 'priority': an integer 1 through 5\n"
     "- 'explanation': a 1-2 sentence clinical justification for this ESI level, written "
-    "for a busy nurse, incorporating the latest update."
+    "for a busy nurse, incorporating the latest update. Use markdown bolding (**word**) "
+    "to highlight important clinical findings and vitals."
 )
 
 
@@ -672,7 +674,8 @@ class LLMService:
                 else str(outcome.state.status)
             ),
         }
-        return parsed, result, explanation, calls, meta
+        outcome.baseline_result = result
+        return parsed, outcome, explanation, calls, meta
 
     def reassess(self, text: str, patient_id: str) -> tuple[int | None, Explanation | None, list[LLMCall]]:
         """A direct LLM assessment bypassing the deterministic engine."""

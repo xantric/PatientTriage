@@ -143,7 +143,7 @@ def test_telemetry_records_parse_and_explain():
 def test_sparse_wellness_note_asks_for_more_information():
     """Thin notes must not present a firm ESI with dramatic model prose."""
 
-    parsed, result, explanation, calls, meta = LLM.triage_intake("21M, no disease", "TEST-SPARSE")
+    parsed, outcome, explanation, calls, meta = LLM.triage_intake("21M, no disease", "TEST-SPARSE")
     assert parsed.patient.age_years == 21
     assert meta["needs_more_information"] is True
     assert any("vital" in g.lower() or "wellness" in g.lower() or "reason" in g.lower()
@@ -152,7 +152,7 @@ def test_sparse_wellness_note_asks_for_more_information():
     assert explanation.source == "template"
     # Engine may still compute a reference score, but it should not escalate
     # a wellness phrase into ESI 2 via default resource guessing.
-    assert result.adjudicator.acuity >= 4
+    assert outcome.baseline_result.adjudicator.acuity >= 4
 
 
 def test_rule_parse_reads_compact_age_and_wellness_complaint():
