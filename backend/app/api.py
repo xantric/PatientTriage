@@ -186,9 +186,11 @@ def update_patient(patient_id: str, req: PatientUpdateRequest) -> PatientUpdateR
                  "If new vitals are provided, use those instead of the initial vitals.")
     combined_text = "\n".join(parts)
 
-    # First parse the combined text the standard way to get structured data
+    # First parse the combined text the standard way to get structured data.
+    # triage_intake returns PrimaryAssessmentResult; tolerate a bare TriageResult
+    # if an older service build is still loaded.
     parsed, outcome, old_explanation, calls, meta = LLM.triage_intake(combined_text, patient_id)
-    result = outcome.baseline_result
+    result = getattr(outcome, "baseline_result", outcome)
 
     # Now use the pure-Gemini free-text reasoner to get the actual ESI
     new_priority, new_explanation, reassess_calls = LLM.reassess(combined_text, patient_id)
@@ -203,24 +205,87 @@ def update_patient(patient_id: str, req: PatientUpdateRequest) -> PatientUpdateR
         explanation = old_explanation
 
     if req.confirm:
-        # Apply: update patient history and reassess on the board
-        new_p = p.model_copy()
-        new_p.history = list(new_p.history) + [req.note]
-        DEPARTMENT._register_assessed(new_p)
+        from datetime import datetime, timezone
 
-        # Apply the LLM-predicted priority as a confirmed override so the
-        # board ESI actually reflects the new assessment.
-        new_priority = meta["live_priority"] or result.adjudicator.acuity
-        DEPARTMENT.overrides[patient_id] = new_priority
+        from app.agent.evaluation import refresh_evaluation
+        from app.domain.enums import AgentStatus, ClinicianAction, DecisionSource
+        from app.domain.models import AgentRecommendation, ClinicianDecision
+
+        final_priority = int(meta.get("live_priority") or result.adjudicator.acuity)
+        before = DEPARTMENT.effective_acuity(patient_id)
+
+        # Keep the clinician note on the chart.
+        new_p = p.model_copy(deep=True)
+        new_p.history = list(new_p.history) + [req.note]
+        DEPARTMENT.patients[patient_id] = new_p
+
+        # Apply the reassessed acuity to the live board result.
+        board_result = DEPARTMENT.results[patient_id].model_copy(deep=True)
+        board_result.adjudicator.acuity = final_priority
+        DEPARTMENT.results[patient_id] = board_result
+
+        state = DEPARTMENT.agent_states[patient_id]
+        prior_rec = state.current_recommendation
+        reason_summary = (
+            (explanation.text or "").strip()
+            or f"Reassessed after clinician update: {req.note}"
+        )[:500]
+        if prior_rec is not None:
+            state.previous_recommendation = prior_rec
+        rec = AgentRecommendation(
+            priority=final_priority,
+            urgency="semi-urgent" if final_priority >= 4 else "urgent",
+            care_pathway=board_result.adjudicator.placement or "",
+            monitoring_plan=prior_rec.monitoring_plan if prior_rec else "",
+            confidence=(
+                prior_rec.confidence
+                if prior_rec is not None
+                else board_result.interpreter.confidence
+            ),
+            reason_summary=reason_summary,
+            key_evidence=[f"Clinician update: {req.note}"],
+            human_review_required=False,
+        )
+        state.current_recommendation = rec
+        state.information_gaps = []
+        state.human_review_required = False
+        state.status = AgentStatus.COMPLETED
+        if outcome is not None and getattr(outcome, "decision_source", None) is not None:
+            DEPARTMENT.decision_sources[patient_id] = outcome.decision_source
+        elif meta.get("decision_source") == "agent":
+            DEPARTMENT.decision_sources[patient_id] = DecisionSource.agent
+
+        state.clinician_decision = ClinicianDecision(
+            patient_id=patient_id,
+            action=ClinicianAction.accept,
+            actor="clinician",
+            actor_role="triage nurse",
+            reason=f"Confirmed reassessment after new information: {req.note}",
+            active_priority=final_priority,
+            related_recommendation_id=rec.recommendation_id,
+            timestamp_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            info_provided=[req.note],
+        )
+
+        # Confirmed reassessment is the accepted recommendation, not an override.
+        DEPARTMENT.overrides.pop(patient_id, None)
+        refresh_evaluation(state, clinician_priority=final_priority)
+
         DEPARTMENT.audit.append(
             patient_id=patient_id,
             action="update_confirmed",
             actor="clinician",
             actor_role="triage nurse",
             reason=f"Confirmed reassessment after new information: {req.note}",
-            before_acuity=DEPARTMENT.results[patient_id].adjudicator.acuity,
-            after_acuity=new_priority,
+            before_acuity=before,
+            after_acuity=final_priority,
+            clinician_action="accept",
+            clinician_reason=f"Confirmed reassessment after new information: {req.note}",
+            final_priority=final_priority,
+            agent_priority=final_priority,
         )
+        if hasattr(DEPARTMENT, "_save_snapshot"):
+            DEPARTMENT._save_snapshot()
 
         detail = DEPARTMENT.detail(patient_id)
         return PatientUpdateResponse(
@@ -228,9 +293,9 @@ def update_patient(patient_id: str, req: PatientUpdateRequest) -> PatientUpdateR
             parsed=parsed,
             result=result,
             explanation=explanation,
-            needs_more_information=meta["needs_more_information"],
-            information_gaps=meta["information_gaps"],
-            live_priority=meta["live_priority"],
+            needs_more_information=False,
+            information_gaps=[],
+            live_priority=final_priority,
             confirmed=True,
             detail=detail,
         )

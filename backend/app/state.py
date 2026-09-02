@@ -432,10 +432,17 @@ class Department:
                 direction_for(primary, override) if override is not None else None
             ),
             provisional_acuity=adj.provisional_acuity,
-            escalated_for_uncertainty=adj.escalated_for_uncertainty,
+            escalated_for_uncertainty=(
+                adj.escalated_for_uncertainty
+                and clinician_action
+                not in ("accept", "modify", "override")
+            ),
             confidence=confidence,
             confidence_band=band,
-            routed_to_nurse=adj.routed_to_nurse or state.human_review_required,
+            routed_to_nurse=(
+                (adj.routed_to_nurse or state.human_review_required)
+                and clinician_action not in ("accept", "modify", "override")
+            ),
             red_flag_count=len(interp.red_flags),
             top_drivers=drivers,
             clocks=_clock_labels(baseline),
