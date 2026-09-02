@@ -74,6 +74,24 @@ def test_fahrenheit_is_converted_to_celsius():
     assert x.temp_c is not None and 38.0 <= x.temp_c <= 39.0
 
 
+def test_explicit_fahrenheit_and_celsius_units():
+    x_f = rule_parse("Vitals: temp 101.3°F")
+    assert x_f.temp_c is not None and 38.0 <= x_f.temp_c <= 39.0
+    x_c = rule_parse("Vitals: temp 38.3°C")
+    assert x_c.temp_c == 38.3
+
+
+def test_labeled_intake_form_temp_with_unit():
+    note = (
+        "Patient Name: Test Patient\n"
+        "Age: 40\n"
+        "Vitals: temp 98.6°F\n"
+        "Note: sore throat"
+    )
+    x = rule_parse(note)
+    assert x.temp_c is not None and 36.5 <= x.temp_c <= 37.5
+
+
 def test_status_is_rule_based_without_a_key():
     status = LLM.status()
     assert status.live is False

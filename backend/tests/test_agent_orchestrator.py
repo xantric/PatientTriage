@@ -56,8 +56,9 @@ def _action(obj: dict) -> str:
 def test_system_prompt_requires_independent_recommendation():
     assert "triage decision-support agent" in SYSTEM_PROMPT.lower()
     assert "never invent patient data" in SYSTEM_PROMPT.lower()
-    assert "never diagnose" in SYSTEM_PROMPT.lower()
+    assert "definitive diagnoses" in SYSTEM_PROMPT.lower()
     assert "disagree with deterministic baseline" in SYSTEM_PROMPT.lower()
+    assert "clinician review" in SYSTEM_PROMPT.lower()
 
 
 def test_parse_rejects_invalid_and_unknown_action():

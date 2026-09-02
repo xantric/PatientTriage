@@ -85,8 +85,10 @@ class GeminiClient:
             )
             
         recent = [t for t in self._call_history if now - t < 60]
-        if len(recent) >= 15:
-            # We reached the 15 RPM limit. Wait until the oldest of the 15 calls expires.
+        from app.llm.config import gemini_rpm
+
+        rpm_limit = gemini_rpm()
+        if len(recent) >= rpm_limit:
             sleep_time = 60 - (now - recent[0])
             if sleep_time > 0:
                 time.sleep(sleep_time + 0.1)

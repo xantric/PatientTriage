@@ -672,7 +672,7 @@ class LLMService:
                 else str(outcome.state.status)
             ),
         }
-        return parsed, outcome, explanation, calls, meta
+        return parsed, result, explanation, calls, meta
 
     def reassess(self, text: str, patient_id: str) -> tuple[int | None, Explanation | None, list[LLMCall]]:
         """A direct LLM assessment bypassing the deterministic engine."""

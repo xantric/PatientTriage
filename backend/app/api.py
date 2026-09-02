@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__ as ENGINE_VERSION
+from app.cache.assessment_cache import assessment_cache
+from app.data.generator import build_cohort
 from app.engine.watcher import simulate
 from app.llm.service import LLM
 from app.models import (
@@ -51,7 +53,24 @@ api = APIRouter(prefix="/api")
 
 @api.get("/health")
 def health() -> dict:
-    return {"status": "ok", "model_version": ENGINE_VERSION, "patients": len(DEPARTMENT.patients)}
+    expected = {
+        1: len(build_cohort(surge_factor=1)),
+        3: len(build_cohort(surge_factor=3)),
+    }
+    by_surge = assessment_cache.count_by_surge()
+    return {
+        "status": "ok",
+        "model_version": ENGINE_VERSION,
+        "patients": len(DEPARTMENT.patients),
+        "assessment_cache": {
+            "enabled": assessment_cache.enabled(),
+            "entries": assessment_cache.count(),
+            "by_surge": {
+                str(sf): {"cached": by_surge.get(sf, 0), "expected": expected.get(sf, 0)}
+                for sf in (1, 3)
+            },
+        },
+    }
 
 
 @api.get("/board", response_model=BoardResponse)

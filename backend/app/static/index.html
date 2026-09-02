@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sentinel: triage decision support</title>
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/app.css?v=20260302f" />
 </head>
 <body>
   <div class="appbar">
@@ -107,23 +107,60 @@
             </select>
           </div>
         </div>
-        <div class="field">
-          <label for="intake-vitals">Vitals</label>
-          <input type="text" id="intake-vitals" placeholder="e.g. HR 104, BP 118/70, SpO2 93%" />
+        <div class="field intake-vitals-block">
+          <span class="field-group-label">Vitals</span>
+          <div class="intake-vitals-grid">
+            <div class="field">
+              <label for="intake-vital-hr">HR</label>
+              <input type="text" id="intake-vital-hr" inputmode="numeric" autocomplete="off" placeholder="bpm" />
+            </div>
+            <div class="field">
+              <label for="intake-vital-bp">BP</label>
+              <input type="text" id="intake-vital-bp" inputmode="decimal" autocomplete="off" placeholder="e.g. 118/70" />
+            </div>
+            <div class="field">
+              <label for="intake-vital-spo2">SpO2</label>
+              <input type="text" id="intake-vital-spo2" inputmode="numeric" autocomplete="off" placeholder="%" />
+            </div>
+            <div class="field">
+              <label for="intake-vital-rr">RR</label>
+              <input type="text" id="intake-vital-rr" inputmode="numeric" autocomplete="off" placeholder="/min" />
+            </div>
+            <div class="field intake-vital-temp-cell">
+              <div class="intake-vital-temp-head">
+                <label for="intake-vital-temp">Temp</label>
+                <div class="unit-switch" role="group" aria-label="Temperature unit">
+                  <button type="button" class="is-active" data-temp-unit="C">°C</button>
+                  <button type="button" data-temp-unit="F">°F</button>
+                </div>
+              </div>
+              <input type="text" id="intake-vital-temp" inputmode="decimal" autocomplete="off" placeholder="e.g. 37.2" />
+            </div>
+          </div>
+          <div class="field intake-vitals-other">
+            <label for="intake-vital-other">Other vitals</label>
+            <input type="text" id="intake-vital-other" autocomplete="off" placeholder="e.g. GCS 14, pain 7/10, glucose 180" />
+          </div>
         </div>
         <div class="field">
           <label for="intake-text">Description / note</label>
           <textarea id="intake-text" rows="3" placeholder="Chief complaint, arrival mode, onset..."></textarea>
         </div>
 
-        <div class="intake-history">
+        <div class="intake-history" id="intake-history-panel">
           <div class="intake-history-head">
-            <span class="intake-history-title">Past history</span>
+            <button type="button" class="intake-history-toggle" id="intake-history-toggle" aria-expanded="false" aria-controls="intake-history-body">
+              <span class="intake-history-title">Past history</span>
+              <svg class="intake-history-chevron" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
             <label class="intake-prior">
               <input type="checkbox" id="intake-prior" />
               Prior record on file
             </label>
           </div>
+          <div class="intake-history-body" id="intake-history-body" hidden>
           <div class="intake-chip-rows">
             <div class="intake-chip-row" data-chip-kind="history">
               <label for="intake-history-input">Medical history</label>
@@ -149,6 +186,7 @@
               </div>
               <div class="intake-chip-list" id="intake-allergies-chips"></div>
             </div>
+          </div>
           </div>
         </div>
 
@@ -212,6 +250,6 @@
   </footer>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260302f"></script>
 </body>
 </html>

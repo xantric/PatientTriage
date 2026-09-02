@@ -51,6 +51,25 @@ def timeout_ms() -> int:
     return max(value, 10000)
 
 
+def assessment_cache_enabled() -> bool:
+    return (os.getenv("SENTINEL_ASSESSMENT_CACHE") or "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def gemini_rpm() -> int:
+    """Max live Gemini requests per minute (free tier is often 12)."""
+
+    try:
+        value = int(os.getenv("SENTINEL_GEMINI_RPM", "12"))
+    except ValueError:
+        value = 12
+    return max(1, value)
+
+
 def package_available() -> bool:
     try:
         return importlib.util.find_spec("google.genai") is not None

@@ -162,12 +162,63 @@ def test_clinician_override_logged_with_agent_fields():
     row = res.json()["row"]
     assert row["acuity"] == 2
     assert row["engine_acuity"] == before["engine_acuity"]
+    assert row["overridden"] is True
+    assert row["clinician_action"] == "override"
     audit = client.get("/api/audit").json()
     hitl = [a for a in audit if a["patient_id"] == pid and a["action"].startswith("hitl_")][-1]
     assert hitl["clinician_action"] == "override"
     assert hitl["clinician_reason"]
     assert hitl["final_priority"] == 2
     assert hitl["agent_priority"] is not None or hitl["baseline_priority"] is not None
+
+
+def test_hitl_accept_not_marked_as_override():
+    client = TestClient(app)
+    pid = "P-009"
+    before = client.get(f"/api/patients/{pid}").json()["row"]
+    agent_priority = before["agent_priority"] or before["acuity"]
+    res = client.post(
+        "/api/hitl",
+        json={
+            "patient_id": pid,
+            "action": "accept",
+            "actor": "Dr. Lee",
+            "reason": "Agree with agent assessment.",
+        },
+    )
+    assert res.status_code == 200
+    row = res.json()["row"]
+    assert row["acuity"] == agent_priority
+    assert row["overridden"] is False
+    assert row["clinician_action"] == "accept"
+    board_row = next(
+        r for r in client.get("/api/board").json()["rows"] if r["patient_id"] == pid
+    )
+    assert board_row["overridden"] is False
+    assert board_row["clinician_action"] == "accept"
+
+
+def test_hitl_accept_heals_stale_override_flag():
+    client = TestClient(app)
+    pid = "P-010"
+    from app.state import DEPARTMENT
+    from app.domain.enums import ClinicianAction
+    from app.domain.models import ClinicianDecision
+
+    DEPARTMENT.overrides[pid] = 2
+    state = DEPARTMENT.agent_states[pid]
+    state.clinician_decision = ClinicianDecision(
+        patient_id=pid,
+        action=ClinicianAction.accept,
+        actor="Dr. Lee",
+        actor_role="clinician",
+        reason="Agree with agent assessment.",
+        active_priority=2,
+        timestamp_utc="2026-01-01T00:00:00+00:00",
+    )
+    row = client.get(f"/api/patients/{pid}").json()["row"]
+    assert row["clinician_action"] == "accept"
+    assert row["overridden"] is False
 
 
 def test_hitl_modify_requires_reason():

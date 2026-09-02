@@ -23,6 +23,7 @@ from app.models import (
 )
 
 SEED = 20260823
+COHORT_SEED = SEED
 
 
 def _named_cases() -> list[Patient]:

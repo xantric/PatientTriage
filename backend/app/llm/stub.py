@@ -18,13 +18,27 @@ def _search_float(pattern: str, text: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
-def _normalise_temp(value: float | None) -> float | None:
-    if value is None:
-        return None
-    # Anything clearly above a survivable Celsius reading is Fahrenheit.
-    if value >= 45:
+def _normalise_temp(value: float, unit: str | None = None) -> float:
+    u = (unit or "").lower().replace("°", "").strip()
+    if u.startswith("f"):
+        return round((value - 32) * 5 / 9, 1)
+    if u.startswith("c"):
+        return round(value, 1)
+    # Auto-detect when no unit: body temp in °F is ~95–106, in °C is ~35–42.
+    if value >= 90 or (45 <= value <= 110):
         return round((value - 32) * 5 / 9, 1)
     return round(value, 1)
+
+
+def _parse_temp(text: str) -> float | None:
+    m = re.search(
+        r"(?:temp|temperature|t)\D{0,4}(\d{2,3}(?:\.\d)?)\s*(°?\s*([cf]|fahrenheit|celsius))?\b",
+        text,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    return _normalise_temp(float(m.group(1)), m.group(2))
 
 
 def _onset_minutes(text: str) -> int | None:
@@ -128,9 +142,7 @@ def rule_parse(text: str) -> IntakeExtraction:
     hr = _search_float(r"(?:hr|heart rate|pulse)\D{0,4}(\d{2,3})", t)
     rr = _search_float(r"(?:rr|resp(?:iratory)? rate|resps?|breathing)\D{0,4}(\d{1,2})", t)
     spo2 = _search_float(r"(?:spo2|sats?|o2 sat|oxygen sat|sat)\D{0,4}(\d{2,3})", t)
-    temp = _normalise_temp(
-        _search_float(r"(?:temp|temperature|t)\D{0,4}(\d{2,3}(?:\.\d)?)", t)
-    )
+    temp = _parse_temp(t)
     pain = _search_float(r"(\d{1,2})\s*/\s*10", t)
 
     sbp = dbp = None

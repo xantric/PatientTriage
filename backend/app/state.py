@@ -9,10 +9,10 @@ The deterministic engine is stored as baseline / fallback / evaluation only.
 Live board acuity comes from the agent recommendation (or explicit fallback),
 then clinician override.
 
-Board cohort load defaults to deterministic_fallback unless an AgentLLM is
-injected or SENTINEL_LIVE_AGENT_BOARD=1. That keeps demos/tests from firing
-dozens of live Gemini calls on every refresh while still exposing
-run_primary_assessment() for true agent-primary scoring.
+Board cohort load uses the SQLite assessment cache when enabled: cached Gemini
+outcomes reload instantly; uncached patients are assessed once and stored.
+Without cache, board defaults to deterministic_fallback unless an AgentLLM is
+injected or SENTINEL_LIVE_AGENT_BOARD=1.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from app.agent.orchestrator import AgentLLM
 from app.agent.primary import PrimaryAssessmentResult, run_primary_assessment
 from app.agent.timeline import build_operational_timeline, status_label
 from app.audit import AuditLog, direction_for
+from app.cache.assessment_cache import assessment_cache
 from app.data.generator import build_cohort
 from app.domain.enums import DecisionSource
 from app.domain.models import TriageAgentState
@@ -80,6 +81,19 @@ class PendingIntake:
     meta: dict
     expires_at: float
 
+
+@dataclass
+class _CohortSnapshot:
+    """In-memory board for one surge level (instant 1x <-> 3x switching)."""
+
+    surge_factor: int
+    patients: dict[str, Patient]
+    results: dict[str, TriageResult]
+    agent_states: dict[str, TriageAgentState]
+    decision_sources: dict[str, DecisionSource]
+    overrides: dict[str, int]
+
+
 class Department:
     def __init__(
         self,
@@ -91,35 +105,107 @@ class Department:
         self.audit = AuditLog()
         self.agent_llm = agent_llm
         self.force_fallback = force_fallback
-        self.load(surge_factor)
-
-    def load(self, surge_factor: int = 1) -> None:
-        """Build the cohort and run primary assessment for everyone."""
-
-        self.surge_factor = surge_factor
-        self.patients: dict[str, Patient] = {}
-        self.results: dict[str, TriageResult] = {}
-        self.agent_states: dict[str, TriageAgentState] = {}
-        self.decision_sources: dict[str, DecisionSource] = {}
-        self.overrides: dict[str, int] = {}
+        self._snapshots: dict[int, _CohortSnapshot] = {}
         self.pending_intakes: dict[str, PendingIntake] = {}
         self._intake_seq = 0
-        use_fallback = not _live_agent_board_enabled()
-        for p in build_cohort(surge_factor=surge_factor):
-            self._register_assessed(p, force_fallback=use_fallback)
+        self.load(surge_factor, allow_gemini_warm=False)
 
-    def _assess(self, patient: Patient, force_fallback: bool = False) -> PrimaryAssessmentResult:
+    def _snapshot(self) -> _CohortSnapshot:
+        return _CohortSnapshot(
+            surge_factor=self.surge_factor,
+            patients=dict(self.patients),
+            results=dict(self.results),
+            agent_states=dict(self.agent_states),
+            decision_sources=dict(self.decision_sources),
+            overrides=dict(self.overrides),
+        )
+
+    def _restore(self, snap: _CohortSnapshot) -> None:
+        self.surge_factor = snap.surge_factor
+        self.patients = dict(snap.patients)
+        self.results = dict(snap.results)
+        self.agent_states = dict(snap.agent_states)
+        self.decision_sources = dict(snap.decision_sources)
+        self.overrides = dict(snap.overrides)
+
+    def _save_snapshot(self) -> None:
+        self._snapshots[self.surge_factor] = self._snapshot()
+
+    def load(self, surge_factor: int = 1, *, allow_gemini_warm: bool | None = None) -> None:
+        """Build the cohort and run primary assessment for everyone."""
+
+        if surge_factor in self._snapshots:
+            self._restore(self._snapshots[surge_factor])
+            return
+
+        self.surge_factor = surge_factor
+        self.patients = {}
+        self.results = {}
+        self.agent_states = {}
+        self.decision_sources = {}
+        self.overrides = {}
+        if allow_gemini_warm is None:
+            allow_gemini_warm = assessment_cache.enabled()
+        for p in build_cohort(surge_factor=surge_factor):
+            self._register_assessed(p, allow_gemini_warm=allow_gemini_warm)
+        self._save_snapshot()
+
+    def _assess(
+        self,
+        patient: Patient,
+        force_fallback: bool = False,
+        *,
+        allow_gemini_warm: bool = False,
+    ) -> PrimaryAssessmentResult:
         use_fallback = force_fallback or self.force_fallback
+
         if self.agent_llm is not None:
             return run_primary_assessment(
                 patient,
                 llm=self.agent_llm,
                 force_fallback=use_fallback,
             )
-        return run_primary_assessment(patient, force_fallback=use_fallback)
 
-    def _register_assessed(self, patient: Patient, force_fallback: bool = False) -> PrimaryAssessmentResult:
-        outcome = self._assess(patient, force_fallback=force_fallback)
+        cache_key = assessment_cache.make_key(patient.patient_id, self.surge_factor)
+        if assessment_cache.enabled() and not use_fallback:
+            cached = assessment_cache.get(cache_key)
+            if cached is None and self.surge_factor != 1:
+                # Named cases and the first filler block are identical at 1x and 3x.
+                base_key = assessment_cache.make_key(patient.patient_id, 1)
+                cached = assessment_cache.get(base_key)
+                if cached is not None:
+                    assessment_cache.put(cache_key, cached)
+            if cached is not None:
+                return cached
+
+        if allow_gemini_warm and assessment_cache.enabled() and not use_fallback:
+            effective_fallback = False
+        else:
+            effective_fallback = use_fallback or not _live_agent_board_enabled()
+
+        outcome = run_primary_assessment(patient, force_fallback=effective_fallback)
+
+        if (
+            assessment_cache.enabled()
+            and not use_fallback
+            and outcome.decision_source == DecisionSource.agent
+        ):
+            assessment_cache.put(cache_key, outcome)
+
+        return outcome
+
+    def _register_assessed(
+        self,
+        patient: Patient,
+        force_fallback: bool = False,
+        *,
+        allow_gemini_warm: bool = False,
+    ) -> PrimaryAssessmentResult:
+        outcome = self._assess(
+            patient,
+            force_fallback=force_fallback,
+            allow_gemini_warm=allow_gemini_warm,
+        )
         pid = patient.patient_id
         self.patients[pid] = patient
         self.results[pid] = outcome.baseline_result
@@ -206,6 +292,7 @@ class Department:
                 TimelineItem(**item) for item in build_operational_timeline(state)
             ],
             human_review_required=state.human_review_required,
+            clinician_action=self._resolved_clinician_action(patient_id),
         )
 
     def reserve_next_patient_id(self) -> str:
@@ -237,10 +324,12 @@ class Department:
             }
         )
         self._register_assessed(stamped)
+        self._save_snapshot()
         return pid
 
     def reset(self, surge_factor: int, actor: str = "system") -> None:
-        self.load(surge_factor)
+        # Surge toggles restore an in-memory snapshot; never re-call Gemini here.
+        self.load(surge_factor, allow_gemini_warm=False)
         self.audit.append(
             patient_id="-",
             action="reset",
@@ -264,6 +353,19 @@ class Department:
             return self.overrides[patient_id]
         return self.primary_priority(patient_id)
 
+    def _resolved_clinician_action(self, patient_id: str) -> Optional[str]:
+        """Latest clinician HITL action from agent state or audit trail."""
+
+        state = self.agent_states[patient_id]
+        if state.clinician_decision is not None:
+            return state.clinician_decision.action.value
+        for rec in reversed(self.audit.for_patient(patient_id)):
+            if rec.clinician_action:
+                return rec.clinician_action
+            if rec.action.startswith("hitl_"):
+                return rec.action[5:]
+        return None
+
     def row(self, patient_id: str) -> BoardRow:
         p = self.patients[patient_id]
         baseline = self.results[patient_id]
@@ -274,9 +376,27 @@ class Department:
         )
         override = self.overrides.get(patient_id)
         primary = self.primary_priority(patient_id)
+        clinician_action = self._resolved_clinician_action(patient_id)
+
+        if clinician_action == "accept":
+            self.overrides.pop(patient_id, None)
+            override = None
+        elif (
+            clinician_action in ("modify", "override")
+            and override is None
+            and state.clinician_decision
+            and state.clinician_decision.active_priority is not None
+        ):
+            override = state.clinician_decision.active_priority
+            self.overrides[patient_id] = override
+
         effective = override if override is not None else primary
 
-        refresh_evaluation(state, clinician_priority=override)
+        clin_dec = state.clinician_decision
+        clin_priority = override
+        if clin_priority is None and clin_dec and clin_dec.active_priority is not None:
+            clin_priority = clin_dec.active_priority
+        refresh_evaluation(state, clinician_priority=clin_priority)
         ev = state.evaluation
 
         rec = state.current_recommendation
@@ -307,7 +427,7 @@ class Department:
             arrival_epoch_min=p.arrival_epoch_min,
             acuity=effective,
             engine_acuity=adj.acuity,
-            overridden=override is not None,
+            overridden=override is not None and clinician_action != "accept",
             override_direction=(
                 direction_for(primary, override) if override is not None else None
             ),
@@ -333,6 +453,7 @@ class Department:
             agent_clinician_agreement=ev.agent_clinician_agreement,
             baseline_clinician_agreement=ev.baseline_clinician_agreement,
             agent_status=state.status.value,
+            clinician_action=clinician_action,
         )
 
     def board(self) -> BoardResponse:
@@ -423,6 +544,7 @@ class Department:
             clinician_reason=req.reason,
             final_priority=req.new_acuity,
         )
+        self._save_snapshot()
         return self.detail(req.patient_id)
 
     def apply_hitl(self, req: HitlRequest) -> PatientDetail:
@@ -447,16 +569,21 @@ class Department:
         except HitlError as exc:
             raise ValueError(str(exc)) from exc
 
-        if decision.active_priority is not None and decision.action.value in (
-            "accept",
-            "modify",
-            "override",
+        if decision.action.value in ("modify", "override"):
+            if decision.active_priority is not None:
+                self.overrides[req.patient_id] = decision.active_priority
+        elif decision.action.value == "accept":
+            self.overrides.pop(req.patient_id, None)
+        elif (
+            decision.action.value == "escalate"
+            and decision.active_priority is not None
         ):
             self.overrides[req.patient_id] = decision.active_priority
 
-        refresh_evaluation(
-            state, clinician_priority=self.overrides.get(req.patient_id)
-        )
+        clin_priority = self.overrides.get(req.patient_id)
+        if clin_priority is None and decision.active_priority is not None:
+            clin_priority = decision.active_priority
+        refresh_evaluation(state, clinician_priority=clin_priority)
         agent_p = (
             state.current_recommendation.priority
             if state.current_recommendation
@@ -497,6 +624,7 @@ class Department:
                 req.patient_id, DecisionSource.deterministic_fallback
             ).value,
         )
+        self._save_snapshot()
         return self.detail(req.patient_id)
 
     def safe_wait_minutes(self, patient_id: str) -> Optional[int]:

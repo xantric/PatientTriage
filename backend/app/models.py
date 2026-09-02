@@ -289,6 +289,7 @@ class AgentPanel(BaseModel):
     disagreement_reason: Optional[str] = None
     timeline: list[TimelineItem] = Field(default_factory=list)
     human_review_required: bool = True
+    clinician_action: Optional[str] = None
 
 
 class BoardRow(BaseModel):
@@ -327,6 +328,7 @@ class BoardRow(BaseModel):
     agent_clinician_agreement: Optional[bool] = None
     baseline_clinician_agreement: Optional[bool] = None
     agent_status: str = "COMPLETED"
+    clinician_action: Optional[str] = None
 
 
 class PatientUpdateRequest(BaseModel):
